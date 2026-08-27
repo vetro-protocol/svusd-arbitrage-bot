@@ -1,0 +1,29 @@
+{
+  "name": "svusd-arb-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "sVUSD arbitrage bot: buy sVUSD below fair value on Curve, redeem via the StakingVault 7-day cooldown, capture the spread. Contract-custody; stateless bot, on-chain position state.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src",
+    "format": "biome check --write src"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "ethers": "^6.13.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.10",
+    "@types/node": "^22.13.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
