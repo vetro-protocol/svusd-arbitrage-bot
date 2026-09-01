@@ -16,7 +16,8 @@ import type {EntrySwap} from "./swapBuilder.js";
  */
 const ARBITRAGE_ABI = parseAbi([
   "function openPosition(uint256 vusdAmount, (address target, address approveTarget, bytes swapCalldata, uint256 minAmountOut) buy, uint256 minProfit) returns (uint256 requestId, uint256 lockedVusd)",
-  "function settlePosition(uint256 requestId, uint256 minVusdOut) returns (int256 profit)",
+  "function settlePosition(uint256 requestId) returns (int256 profit)",
+  "function settleClaimablePositions(uint256 maxCount) returns (uint256 settled, int256 totalProfit)",
   "function openRequestIds() view returns (uint256[])",
   "function openRequestCount() view returns (uint256)",
   "function lockedVusdOf(uint256 requestId) view returns (uint256)",
@@ -94,9 +95,9 @@ export class Arbitrage {
     };
   }
 
-  /** Simulate/send pair for `settlePosition(requestId, minVusdOut)`. */
-  settlePosition(requestId: bigint, minVusdOut: bigint) {
-    const args = [requestId, minVusdOut] as const;
+  /** Simulate/send pair for `settlePosition(requestId)`; the contract floors the payout to the locked amount. */
+  settlePosition(requestId: bigint) {
+    const args = [requestId] as const;
     return {
       simulate: () =>
         this.publicClient.simulateContract({
@@ -107,6 +108,22 @@ export class Arbitrage {
           account: this.account,
         }),
       send: () => this.write("settlePosition", args),
+    };
+  }
+
+  /** Simulate/send pair for `settleClaimablePositions(maxCount)`; pass maxUint256 to settle every matured position. */
+  settleClaimablePositions(maxCount: bigint) {
+    const args = [maxCount] as const;
+    return {
+      simulate: () =>
+        this.publicClient.simulateContract({
+          address: this.address,
+          abi: ARBITRAGE_ABI,
+          functionName: "settleClaimablePositions",
+          args,
+          account: this.account,
+        }),
+      send: () => this.write("settleClaimablePositions", args),
     };
   }
 

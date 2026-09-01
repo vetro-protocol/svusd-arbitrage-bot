@@ -24,6 +24,15 @@ interface IStakingVault is IERC20 {
     /// @notice Details of a request (owner, locked assets, claimable timestamp).
     function getRequestDetails(uint256 requestId_) external view returns (CooldownRequest memory request);
 
+    /// @notice All open (unclaimed, uncancelled) request ids owned by `account_`.
+    function getActiveRequestIds(address account_) external view returns (uint256[] memory);
+
+    /// @notice Request ids owned by `account_` whose cooldown has elapsed, with their locked assets.
+    function getClaimableRequests(address account_)
+        external
+        view
+        returns (uint256[] memory requestIds_, uint256[] memory assets_);
+
     /// @notice The vault's underlying asset (VUSD), also the token `claimWithdraw` pays out.
     function asset() external view returns (address);
 }

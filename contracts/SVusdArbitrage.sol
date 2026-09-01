@@ -22,7 +22,6 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
     using SafeCast for int256;
-    using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.AddressSet;
 
     /*//////////////////////////////////////////////////////////////
@@ -68,8 +67,10 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     /// @notice Minimum profit on `openPosition`, in bps of VUSD spent. 0 = off.
     uint256 public minProfitBps;
 
+    // The only per-position state we keep: cost basis the vault does not know (what we spent) and the
+    // payout locked at open. Enumeration of open ids is deferred to the vault (getActiveRequestIds /
+    // getClaimableRequests), so `entryVusd != 0` is our authoritative "do we track this id".
     mapping(uint256 => Position) private _positions;
-    EnumerableSet.UintSet private _openRequests;
     EnumerableSet.AddressSet private _keepers;
 
     /*//////////////////////////////////////////////////////////////
@@ -81,9 +82,7 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     event BeneficiaryUpdated(address indexed previousBeneficiary, address indexed newBeneficiary);
     event AllowedSwapAddressUpdated(address indexed account, bool allowed);
     event MinProfitBpsUpdated(uint256 previousBps, uint256 newBps);
-    event PositionOpened(
-        uint256 indexed requestId, uint256 entryVusd, uint256 shares, uint256 lockedVusd, uint256 claimableAt
-    );
+    event PositionOpened(uint256 indexed requestId, uint256 entryVusd, uint256 shares, uint256 lockedVusd);
     event PositionSettled(uint256 indexed requestId, uint256 entryVusd, uint256 vusdOut, int256 profit);
     event PositionCancelled(uint256 indexed requestId, uint256 sharesReturned);
     event Withdrawn(address indexed token, address indexed to, uint256 amount);
@@ -173,46 +172,38 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
         uint256 floor = Math.max(spent + minProfit_, bpsFloor);
         if (lockedVusd < floor) revert InsufficientProfit(lockedVusd, floor);
 
-        if (!_openRequests.add(requestId)) revert DuplicateRequest(requestId);
+        // requestRedeem hands back a fresh unique id, so this is a belt: never overwrite a tracked position.
+        if (_positions[requestId].entryVusd != 0) revert DuplicateRequest(requestId);
         _positions[requestId] = Position({entryVusd: spent, lockedVusd: lockedVusd});
 
-        uint256 claimableAt = svusd.getRequestDetails(requestId).claimableAt;
-        emit PositionOpened(requestId, spent, sharesBought, lockedVusd, claimableAt);
+        emit PositionOpened(requestId, spent, sharesBought, lockedVusd);
     }
 
-    /// @notice Settle a matured request: principal recycles as reserves, profit goes to the beneficiary.
+    /// @notice Settle a single matured request: principal recycles as reserves, profit goes to the beneficiary.
     /// @param requestId_ Tracked open position to settle.
-    /// @param minVusdOut_ Extra floor on VUSD received; the settle is always held to at least the locked payout.
     /// @return profit Signed VUSD profit (vusdOut - entryVusd).
-    function settlePosition(uint256 requestId_, uint256 minVusdOut_)
+    function settlePosition(uint256 requestId_) external onlyKeeper nonReentrant returns (int256 profit) {
+        profit = _settle(requestId_);
+        _pushProfit(profit);
+    }
+
+    /// @notice Settle the matured requests the vault reports as claimable for this contract.
+    /// @dev `_settle` validates each id against our own positions, so a stray vault id cannot be settled.
+    /// @param maxCount_ Max positions to settle this call; pass type(uint256).max to settle all claimable.
+    function settleClaimablePositions(uint256 maxCount_)
         external
         onlyKeeper
         nonReentrant
-        returns (int256 profit)
+        returns (uint256 settled, int256 totalProfit)
     {
-        if (!_openRequests.contains(requestId_)) revert UnknownRequest(requestId_);
-        Position memory position = _positions[requestId_];
-
-        // CEI: clear the position before the external call.
-        _openRequests.remove(requestId_);
-        delete _positions[requestId_];
-
-        uint256 vusdBefore = vusd.balanceOf(address(this));
-        svusd.claimWithdraw(requestId_, address(this));
-        uint256 vusdOut = vusd.balanceOf(address(this)) - vusdBefore;
-
-        // Always held to at least the locked payout. If the vault ever underpays,
-        // settle reverts and the position is recovered via the owner's `cancelPosition`.
-        uint256 floor = Math.max(minVusdOut_, position.lockedVusd);
-        if (vusdOut < floor) revert InsufficientOutput(vusdOut, floor);
-
-        profit = vusdOut.toInt256() - position.entryVusd.toInt256();
-        emit PositionSettled(requestId_, position.entryVusd, vusdOut, profit);
-
-        // Keep the principal as reserves; push profit to the beneficiary.
-        if (profit > 0) {
-            vusd.safeTransfer(beneficiary, profit.toUint256());
+        (uint256[] memory ids,) = svusd.getClaimableRequests(address(this));
+        uint256 n = ids.length;
+        if (maxCount_ < n) n = maxCount_;
+        for (uint256 i; i < n; ++i) {
+            totalProfit += _settle(ids[i]);
+            ++settled;
         }
+        _pushProfit(totalProfit);
     }
 
     /// @notice Cancel a pending request; the sVUSD shares return to this contract for the
@@ -220,10 +211,9 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     /// @param requestId_ Tracked open position to cancel.
     /// @return sharesReturned sVUSD shares returned by the vault.
     function cancelPosition(uint256 requestId_) external onlyOwner nonReentrant returns (uint256 sharesReturned) {
-        if (!_openRequests.contains(requestId_)) revert UnknownRequest(requestId_);
+        if (_positions[requestId_].entryVusd == 0) revert UnknownRequest(requestId_);
 
         // CEI: clear the position before the external call.
-        _openRequests.remove(requestId_);
         delete _positions[requestId_];
 
         sharesReturned = svusd.cancelWithdraw(requestId_);
@@ -284,25 +274,13 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
                                  VIEWS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice All open request ids. Prefer `openRequestIdsPaged` once many positions can be open.
+    /// @notice All open request ids, read straight from the vault's registry of our active requests.
     function openRequestIds() external view returns (uint256[] memory) {
-        return _openRequests.values();
-    }
-
-    /// @notice A page of open request ids: up to `limit_` from `offset_` (pass max for "all remaining").
-    function openRequestIdsPaged(uint256 offset_, uint256 limit_) external view returns (uint256[] memory page) {
-        uint256 total = _openRequests.length();
-        if (offset_ >= total) return new uint256[](0);
-        // offset_ < total is guaranteed above, so total - offset_ cannot underflow.
-        uint256 end = limit_ > total - offset_ ? total : offset_ + limit_;
-        page = new uint256[](end - offset_);
-        for (uint256 i = offset_; i < end; ++i) {
-            page[i - offset_] = _openRequests.at(i);
-        }
+        return svusd.getActiveRequestIds(address(this));
     }
 
     function openRequestCount() external view returns (uint256) {
-        return _openRequests.length();
+        return svusd.getActiveRequestIds(address(this)).length;
     }
 
     /// @notice VUSD cost basis for an open request (0 if unknown/closed).
@@ -340,5 +318,27 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
                 revert(add(result, 32), mload(result))
             }
         }
+    }
+
+    function _pushProfit(int256 profit) internal {
+        if (profit > 0) vusd.safeTransfer(beneficiary, profit.toUint256());
+    }
+
+    /// @dev Returns profit rather than pushing it, so a batch caller can aggregate one transfer.
+    function _settle(uint256 requestId_) internal returns (int256 profit) {
+        Position memory position = _positions[requestId_];
+        if (position.entryVusd == 0) revert UnknownRequest(requestId_);
+
+        delete _positions[requestId_]; // CEI: clear before the external call
+
+        uint256 vusdBefore = vusd.balanceOf(address(this));
+        svusd.claimWithdraw(requestId_, address(this));
+        uint256 vusdOut = vusd.balanceOf(address(this)) - vusdBefore;
+
+        // On underpayment settle reverts; the owner recovers the position via `cancelPosition`.
+        if (vusdOut < position.lockedVusd) revert InsufficientOutput(vusdOut, position.lockedVusd);
+
+        profit = vusdOut.toInt256() - position.entryVusd.toInt256();
+        emit PositionSettled(requestId_, position.entryVusd, vusdOut, profit);
     }
 }

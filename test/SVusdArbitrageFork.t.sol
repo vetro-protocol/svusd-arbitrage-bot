@@ -118,7 +118,7 @@ contract SVusdArbitrageForkTest is Test {
         vm.warp(details.claimableAt + 1);
 
         vm.prank(keeper);
-        int256 profit = arb.settlePosition(requestId, 0);
+        int256 profit = arb.settlePosition(requestId);
 
         uint256 reserves = IERC20(VUSD).balanceOf(address(arb));
         uint256 pushed = IERC20(VUSD).balanceOf(beneficiary);
@@ -153,7 +153,7 @@ contract SVusdArbitrageForkTest is Test {
         vm.warp(details.claimableAt + 1);
 
         vm.prank(keeper);
-        int256 profit = arb.settlePosition(requestId, 0);
+        int256 profit = arb.settlePosition(requestId);
 
         assertGt(profit, 0, "profitable round trip via real router");
         assertEq(IERC20(VUSD).balanceOf(address(arb)), amount, "principal recycled to reserves");
@@ -210,25 +210,6 @@ contract SVusdArbitrageForkTest is Test {
         assertEq(arb.openRequestCount(), 0, "position cleared");
     }
 
-    // The claim-time floor is now enforced by the contract against the amount locked at open, not
-    // just the keeper's minVusdOut_: demanding more than the vault will pay reverts.
-    function test_settlePosition_revertsWhenMinVusdOutExceedsPayout() public {
-        uint256 amount = 2_000e18;
-        deal(VUSD, address(arb), amount);
-        vm.prank(keeper);
-        (uint256 requestId, uint256 lockedVusd) = arb.openPosition(amount, _buy(amount), 0);
-        assertEq(arb.lockedVusdOf(requestId), lockedVusd, "locked payout stored");
-
-        IStakingVault.CooldownRequest memory details = IStakingVault(SVUSD).getRequestDetails(requestId);
-        vm.warp(details.claimableAt + 1);
-
-        vm.prank(keeper);
-        vm.expectRevert(); // InsufficientOutput: vault pays lockedVusd, we demand more
-        arb.settlePosition(requestId, lockedVusd + 1);
-
-        assertEq(arb.openRequestCount(), 1, "position still open after failed claim");
-    }
-
     // If the vault ever underpays a matured request, the keeper stays bound by the locked floor
     // (settle reverts); recovery is the owner's break-glass cancel, which salvages the shares whole.
     function test_settlePosition_underpayRevertsThenOwnerCancels() public {
@@ -249,7 +230,7 @@ contract SVusdArbitrageForkTest is Test {
 
         vm.prank(keeper);
         vm.expectRevert(); // keeper is held to the locked floor
-        arb.settlePosition(requestId, 0);
+        arb.settlePosition(requestId);
         assertEq(arb.openRequestCount(), 1, "position still open after keeper revert");
 
         // Recovery: owner cancels (hits cancelWithdraw, not the mocked claim) and salvages the shares.
@@ -289,7 +270,7 @@ contract SVusdArbitrageForkTest is Test {
 
         // owner == address(this): settle is keeper-only.
         vm.expectRevert(SVusdArbitrage.NotKeeper.selector);
-        arb.settlePosition(requestId, 0);
+        arb.settlePosition(requestId);
         assertEq(arb.openRequestCount(), 1, "owner cannot settle");
     }
 
@@ -313,7 +294,90 @@ contract SVusdArbitrageForkTest is Test {
 
         vm.prank(keeper);
         vm.expectRevert();
-        arb.settlePosition(requestId, 0);
+        arb.settlePosition(requestId);
+    }
+
+    // settleClaimablePositions: the vault reports our matured ids, so the keeper batch-settles in one
+    // call with no id list. Two positions open, both matured, both settled at once.
+    function test_settleClaimablePositions_settlesAllMatured() public {
+        // Two small buys so the second still clears the floor after the first's price impact.
+        uint256 amount = 500e18;
+        deal(VUSD, address(arb), 2 * amount);
+
+        vm.startPrank(keeper);
+        (uint256 id1,) = arb.openPosition(amount, _buy(amount), 0);
+        arb.openPosition(amount, _buy(amount), 0);
+        vm.stopPrank();
+        assertEq(arb.openRequestCount(), 2, "two open positions");
+
+        // Both opened in the same block, so one claimableAt matures the whole set.
+        IStakingVault.CooldownRequest memory details = IStakingVault(SVUSD).getRequestDetails(id1);
+        vm.warp(details.claimableAt + 1);
+
+        vm.prank(keeper);
+        (uint256 settled, int256 totalProfit) = arb.settleClaimablePositions(type(uint256).max); // all
+        assertEq(settled, 2, "both settled in one call");
+        assertGt(totalProfit, 0, "aggregate profit reported");
+        assertEq(arb.openRequestCount(), 0, "all positions closed");
+        assertEq(IERC20(VUSD).balanceOf(address(arb)), 2 * amount, "principal recycled to reserves");
+        // Single transfer: the beneficiary balance equals the aggregate profit exactly.
+        assertEq(uint256(totalProfit), IERC20(VUSD).balanceOf(beneficiary), "profit pushed once, in aggregate");
+    }
+
+    // maxCount bounds the batch: with two matured, settleClaimablePositions(1) settles one and leaves one.
+    function test_settleClaimablePositions_respectsMaxCount() public {
+        // Two small buys so the second still clears the floor after the first's price impact.
+        uint256 amount = 500e18;
+        deal(VUSD, address(arb), 2 * amount);
+
+        vm.startPrank(keeper);
+        (uint256 id1,) = arb.openPosition(amount, _buy(amount), 0);
+        arb.openPosition(amount, _buy(amount), 0);
+        vm.stopPrank();
+
+        IStakingVault.CooldownRequest memory details = IStakingVault(SVUSD).getRequestDetails(id1);
+        vm.warp(details.claimableAt + 1);
+
+        vm.prank(keeper);
+        (uint256 settled,) = arb.settleClaimablePositions(1);
+        assertEq(settled, 1, "capped at maxCount");
+        assertEq(arb.openRequestCount(), 1, "one position still open");
+    }
+
+    // A no-op when nothing has matured: the vault reports no claimable ids, so nothing settles.
+    function test_settleClaimablePositions_noMaturedIsNoOp() public {
+        uint256 amount = 2_000e18;
+        deal(VUSD, address(arb), amount);
+        vm.prank(keeper);
+        arb.openPosition(amount, _buy(amount), 0);
+
+        vm.prank(keeper);
+        (uint256 settled, int256 totalProfit) = arb.settleClaimablePositions(type(uint256).max);
+        assertEq(settled, 0, "nothing claimable yet");
+        assertEq(totalProfit, 0, "no profit when nothing settles");
+        assertEq(arb.openRequestCount(), 1, "position still open");
+    }
+
+    // maxCount is a real cap now (no 0-means-all sentinel): 0 settles nothing even when matured.
+    function test_settleClaimablePositions_zeroMaxCountSettlesNothing() public {
+        uint256 amount = 2_000e18;
+        deal(VUSD, address(arb), amount);
+        vm.prank(keeper);
+        (uint256 id,) = arb.openPosition(amount, _buy(amount), 0);
+
+        IStakingVault.CooldownRequest memory details = IStakingVault(SVUSD).getRequestDetails(id);
+        vm.warp(details.claimableAt + 1);
+
+        vm.prank(keeper);
+        (uint256 settled,) = arb.settleClaimablePositions(0);
+        assertEq(settled, 0, "maxCount 0 settles nothing");
+        assertEq(arb.openRequestCount(), 1, "matured position left open");
+    }
+
+    // Batch settle is keeper-only, same as the single path.
+    function test_settleClaimablePositions_revertsForOwner() public {
+        vm.expectRevert(SVusdArbitrage.NotKeeper.selector); // owner == address(this)
+        arb.settleClaimablePositions(0);
     }
 
     // H-1 regression: the arbitrary swap call cannot reach an unvetted target, so a compromised
@@ -382,7 +446,7 @@ contract SVusdArbitrageForkTest is Test {
         IStakingVault.CooldownRequest memory details = IStakingVault(SVUSD).getRequestDetails(requestId);
         vm.warp(details.claimableAt + 1);
         vm.prank(keeper);
-        int256 profit = arb.settlePosition(requestId, 0);
+        int256 profit = arb.settlePosition(requestId);
 
         assertGt(profit, 0, "profitable");
         assertEq(IERC20(VUSD).balanceOf(newBeneficiary), uint256(profit), "profit routed to new beneficiary");
