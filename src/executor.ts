@@ -41,10 +41,12 @@ export class Executor {
     console.log(`  [exec ${label}] ${msg}`);
   }
 
-  /** Current EIP-1559 max fee per gas, in gwei, or null if unknown. */
-  private async gasPriceGwei(): Promise<number | null> {
+  /** Current per-gas price in gwei: EIP-1559 max fee, falling back to legacy gasPrice so the cap
+   *  never silently disengages on an RPC that omits the 1559 fee. */
+  private async gasPriceGwei(): Promise<number> {
     const fees = await this.client.estimateFeesPerGas();
-    return fees.maxFeePerGas == null ? null : Number(formatGwei(fees.maxFeePerGas));
+    const wei = fees.maxFeePerGas ?? (await this.client.getGasPrice());
+    return Number(formatGwei(wei));
   }
 
   async run(plan: TxPlan): Promise<ExecOutcome> {
@@ -60,7 +62,7 @@ export class Executor {
     }
 
     const gwei = await this.gasPriceGwei();
-    if (gwei != null && gwei > this.config.maxGasPriceGwei) {
+    if (gwei > this.config.maxGasPriceGwei) {
       const detail = `gas ${gwei.toFixed(2)} gwei > cap ${this.config.maxGasPriceGwei} gwei`;
       this.log(plan.label, `skip: ${detail}`);
       return {status: "skipped-gas-cap", detail};

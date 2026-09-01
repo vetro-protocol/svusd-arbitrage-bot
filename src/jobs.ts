@@ -44,11 +44,13 @@ export class Jobs {
     if (!fresh?.profitable) return;
 
     // Both floors are a tight discount of this fresh, still-profitable simulation, so a sandwich can
-    // only push the fill down to our tolerance. `fresh.profitable` guarantees vusdLocked > spent, so
-    // minProfit is always a positive floor. The contract enforces max(minProfit, minProfitBps).
+    // only push the fill down to our tolerance. The contract enforces max(minProfit, minProfitBps).
     const tolerance = BigInt(10_000 - this.config.entrySlippageBps);
     const minShares = (fresh.sharesOut * tolerance) / 10_000n;
     const minProfit = ((fresh.vusdLocked - fresh.vusdAmount) * tolerance) / 10_000n;
+
+    // A break-even quote (no edge after the discount) is not worth a tx: bail rather than open at 0.
+    if (minProfit <= 0n) return;
 
     const buy = buildEntrySwap({
       amountVusd: fresh.vusdAmount,
@@ -69,7 +71,12 @@ export class Jobs {
     const ids = await this.arb.openRequestIds();
     for (const id of ids) {
       const claimableAt = await this.vault.claimableAt(id);
-      if (claimableAt === 0 || nowSec < claimableAt) continue;
+      if (claimableAt === 0) {
+        // A tracked-open id the vault reports as unknown: never happens for a normal open; surface it.
+        console.warn(`  settle: request #${id} has no claimableAt; skipping`);
+        continue;
+      }
+      if (nowSec < claimableAt) continue;
 
       // minVusdOut left at 0: the contract holds the settle to at least the locked payout.
       const plan = this.arb.settlePosition(id, 0n);

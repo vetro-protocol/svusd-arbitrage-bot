@@ -38,44 +38,63 @@ export interface Config {
   pollIntervalMs: number;
 }
 
-const DEFAULT_SIZES = [1000, 5000, 10000, 25000];
+const DEFAULT_SIZES = ["1000", "5000", "10000", "25000"];
+
+/** A decimal VUSD amount (human units); parsed to wei with parseEther, never through Number. */
+const DECIMAL = /^\d+(\.\d+)?$/;
+/** 32-byte hex, with or without the 0x prefix. */
+const PRIVATE_KEY_HEX = /^(0x)?[0-9a-fA-F]{64}$/;
 
 /** Treat an empty or whitespace-only env value as unset, so defaults apply. */
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 
-/** A numeric env var with a default; empty and unset both fall back to `def`. */
-const numberEnv = (def: number, integer = false) =>
+/** An integer env var with a default; empty and unset both fall back to `def`. */
+const intEnv = (def: number) =>
+  z.preprocess(emptyToUndefined, z.coerce.number().int().default(def));
+
+/** A bps env var, bounded to [0, max]; keeps slippage/floor knobs from being set to nonsense. */
+const bpsEnv = (def: number, max = 10_000) =>
+  z.preprocess(emptyToUndefined, z.coerce.number().int().min(0).max(max).default(def));
+
+/** A money env kept as a decimal string, so parseEther retains full 18-dp precision and never
+ *  sees the scientific notation Number.toString() emits for very small or large values. */
+const moneyEnv = (def: string) =>
   z.preprocess(
     emptyToUndefined,
-    (integer ? z.coerce.number().int() : z.coerce.number()).default(def),
+    z.string().regex(DECIMAL, "must be a decimal VUSD amount").default(def),
   );
 
-function parseSizes(raw: string | undefined): number[] {
-  if (!raw) return DEFAULT_SIZES;
-  const nums = raw
+/** Parse the comma-separated probe sizes (decimal VUSD) straight to wei; drop junk, sort ascending. */
+function parseProbeAmounts(raw: string | undefined): bigint[] {
+  const tokens = (raw ?? "")
     .split(",")
-    .map((x) => Number(x.trim()))
-    .filter((n) => Number.isFinite(n) && n > 0);
-  return (nums.length ? nums : DEFAULT_SIZES).sort((a, b) => a - b);
+    .map((x) => x.trim())
+    .filter((x) => DECIMAL.test(x));
+  const list = (tokens.length ? tokens : DEFAULT_SIZES).map((x) => parseEther(x));
+  return list.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 const EnvSchema = z
   .object({
     ETHEREUM_RPC_URL: z.string().min(1, "required"),
-    PRIVATE_KEY: z.preprocess(emptyToUndefined, z.string().trim().optional()),
+    PRIVATE_KEY: z.preprocess(
+      emptyToUndefined,
+      z.string().trim().regex(PRIVATE_KEY_HEX, "must be a 32-byte hex key").optional(),
+    ),
     ARBITRAGE_ADDRESS: z.preprocess(emptyToUndefined, z.string().trim().optional()),
-    MIN_PROFIT_BPS: numberEnv(0, true),
-    ESTIMATED_GAS_COST_VUSD: numberEnv(15),
-    BUFFER_BPS: numberEnv(30, true),
-    MAX_GAS_PRICE_GWEI: numberEnv(40, true),
+    MIN_PROFIT_BPS: bpsEnv(0),
+    ESTIMATED_GAS_COST_VUSD: moneyEnv("15"),
+    BUFFER_BPS: bpsEnv(30),
+    MAX_GAS_PRICE_GWEI: intEnv(40),
     PROBE_SIZES_VUSD: z.preprocess(emptyToUndefined, z.string().optional()),
-    POLL_INTERVAL_MS: numberEnv(15000, true),
+    POLL_INTERVAL_MS: intEnv(15000),
     TX_MODE: z.preprocess(emptyToUndefined, z.enum(["dry-run", "live"]).default("dry-run")),
     PAUSED: z
       .preprocess(emptyToUndefined, z.string().default("false"))
       .transform((v) => v.toLowerCase() === "true" || v === "1"),
-    MAX_TX_SPEND_VUSD: numberEnv(10000),
-    ENTRY_SLIPPAGE_BPS: numberEnv(50, true),
+    MAX_TX_SPEND_VUSD: moneyEnv("10000"),
+    // Entry slippage tolerance, capped at 20% so a fat-finger can't silently gut sandwich protection.
+    ENTRY_SLIPPAGE_BPS: bpsEnv(50, 2000),
   })
   .refine((env) => !env.PRIVATE_KEY || env.ARBITRAGE_ADDRESS, {
     message: "PRIVATE_KEY is set but ARBITRAGE_ADDRESS is missing",
@@ -102,13 +121,13 @@ export function loadConfig(): Config {
     paused: env.PAUSED,
     privateKey: env.PRIVATE_KEY,
     arbitrageAddress: env.ARBITRAGE_ADDRESS,
-    maxTxSpendVusd: parseEther(env.MAX_TX_SPEND_VUSD.toString()),
+    maxTxSpendVusd: parseEther(env.MAX_TX_SPEND_VUSD),
     entrySlippageBps: env.ENTRY_SLIPPAGE_BPS,
     minProfitBps: env.MIN_PROFIT_BPS,
-    estimatedGasCostVusd: parseEther(env.ESTIMATED_GAS_COST_VUSD.toString()),
+    estimatedGasCostVusd: parseEther(env.ESTIMATED_GAS_COST_VUSD),
     bufferBps: env.BUFFER_BPS,
     maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI,
-    probeAmounts: parseSizes(env.PROBE_SIZES_VUSD).map((n) => parseEther(n.toString())),
+    probeAmounts: parseProbeAmounts(env.PROBE_SIZES_VUSD),
     pollIntervalMs: env.POLL_INTERVAL_MS,
   };
 }

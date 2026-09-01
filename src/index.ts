@@ -106,7 +106,10 @@ async function main() {
       if (jobs) {
         const block = await publicClient.getBlock();
         const nowSec = Number(block.timestamp);
-        await jobs.open(opps, minProfitBps);
+        // The contract can only open through the cooldown path; if the vault ever disables it,
+        // opens would revert, so skip them and let settle keep clearing matured requests.
+        if (state.cooldownEnabled) await jobs.open(opps, minProfitBps);
+        else console.log(`  vault cooldown disabled; skipping opens`);
         await jobs.settle(nowSec);
       }
     } catch (e) {
@@ -114,8 +117,13 @@ async function main() {
     }
   };
 
-  await tick();
-  setInterval(tick, cfg.pollIntervalMs);
+  // Serialize ticks: schedule the next only after the current resolves, so a slow tick (a live tx
+  // blocks until mined) can never overlap and broadcast a duplicate open/settle.
+  const loop = async () => {
+    await tick();
+    setTimeout(loop, cfg.pollIntervalMs);
+  };
+  await loop();
 }
 
 main().catch((e) => {
