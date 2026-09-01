@@ -66,8 +66,8 @@ export class Jobs {
     });
   }
 
-  /** Settle every open request whose cooldown has matured. */
-  async settle(nowSec: number): Promise<void> {
+  /** Settle every open request whose cooldown has matured; returns the open-position count. */
+  async settle(nowSec: number): Promise<number> {
     const ids = await this.arb.openRequestIds();
     for (const id of ids) {
       const claimableAt = await this.vault.claimableAt(id);
@@ -82,5 +82,6 @@ export class Jobs {
       const plan = this.arb.settlePosition(id, 0n);
       await this.executor.run({label: `settle #${id}`, simulate: plan.simulate, send: plan.send});
     }
+    return ids.length;
   }
 }

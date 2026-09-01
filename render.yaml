@@ -1,0 +1,55 @@
+# Render blueprint for the sVUSD arbitrage keeper.
+#
+# ONE instance only. The bot signs from a single EOA, so a second instance would
+# broadcast on the same nonce and the two would clobber each other. numInstances is
+# pinned to 1 and must stay 1; there is no horizontal scaling of this service.
+#
+# Secrets (RPC URL, keeper key, contract address) are marked sync:false: Render
+# leaves them unset in the blueprint and you fill them in the dashboard, so no key
+# ever lands in git. Everything else mirrors .env.example defaults and is safe to
+# commit. Deploys are manual (autoDeploy:false): roll the keeper deliberately.
+services:
+  - type: web
+    name: svusd-arb-bot
+    runtime: node
+    plan: starter # free instances spin down when idle; a keeper must run 24/7
+    region: oregon
+    numInstances: 1 # DO NOT raise: one EOA = one nonce domain
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /status # 200 healthy, 503 if the poll loop stalls -> Render restarts
+    autoDeploy: false
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # ── Secrets: set these in the Render dashboard, never in the blueprint ──
+      - key: ETHEREUM_RPC_URL
+        sync: false
+      - key: PRIVATE_KEY
+        sync: false
+      - key: ARBITRAGE_ADDRESS
+        sync: false
+      # ── Operational toggles: dashboard-owned (sync:false) so a deploy never
+      #    reverts a hand-flip. App defaults to dry-run + unpaused when unset. ──
+      - key: TX_MODE # set "live" in the dashboard to broadcast
+        sync: false
+      - key: PAUSED # kill switch: set "true" in the dashboard to halt
+        sync: false
+      # ── Profit / sizing / safety knobs (mirror .env.example) ──
+      - key: MIN_PROFIT_BPS
+        value: "0"
+      - key: ESTIMATED_GAS_COST_VUSD
+        value: "15"
+      - key: BUFFER_BPS
+        value: "30"
+      - key: MAX_GAS_PRICE_GWEI
+        value: "40"
+      - key: MAX_TX_SPEND_VUSD
+        value: "10000"
+      - key: ENTRY_SLIPPAGE_BPS
+        value: "50"
+      - key: PROBE_SIZES_VUSD
+        value: "1000,5000,10000,25000"
+      - key: POLL_INTERVAL_MS
+        value: "15000"
