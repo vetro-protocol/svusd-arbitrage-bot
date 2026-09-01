@@ -1,4 +1,4 @@
-import {ethers} from "ethers";
+import {type Address, type PublicClient, parseAbi, zeroAddress} from "viem";
 import {SVUSD_ADDRESS} from "./constants.js";
 import type {VaultState} from "./types.js";
 
@@ -8,7 +8,7 @@ import type {VaultState} from "./types.js";
  * Only the views the bot needs. The write path (requestRedeem / claimWithdraw)
  * lives in the arbitrage contract, not here; this module never signs.
  */
-const VAULT_ABI = [
+const VAULT_ABI = parseAbi([
   "function previewRedeem(uint256 shares) view returns (uint256)",
   "function convertToAssets(uint256 shares) view returns (uint256)",
   "function cooldownDuration() view returns (uint256)",
@@ -16,20 +16,33 @@ const VAULT_ABI = [
   // maxRedeem returns 0 unless the owner can instant-withdraw (whitelisted or
   // cooldown disabled); we use it to detect whether the arb is atomic-eligible.
   "function maxRedeem(address owner) view returns (uint256)",
-];
+  "function getRequestDetails(uint256 requestId) view returns ((address owner, uint256 assets, uint256 claimableAt))",
+]);
 
 const ONE_SHARE = 10n ** 18n;
 
 export class StakingVault {
-  private vault: ethers.Contract;
-
-  constructor(provider: ethers.Provider) {
-    this.vault = new ethers.Contract(SVUSD_ADDRESS, VAULT_ABI, provider);
-  }
+  constructor(private client: PublicClient) {}
 
   /** VUSD (1e18) claimable for `shares` sVUSD, at the current (locked-on-request) rate. */
-  async previewRedeem(shares: bigint): Promise<bigint> {
-    return this.vault.previewRedeem(shares);
+  previewRedeem(shares: bigint): Promise<bigint> {
+    return this.client.readContract({
+      address: SVUSD_ADDRESS,
+      abi: VAULT_ABI,
+      functionName: "previewRedeem",
+      args: [shares],
+    });
+  }
+
+  /** Unix second at which `requestId` becomes claimable (0 if unknown). */
+  async claimableAt(requestId: bigint): Promise<number> {
+    const details = await this.client.readContract({
+      address: SVUSD_ADDRESS,
+      abi: VAULT_ABI,
+      functionName: "getRequestDetails",
+      args: [requestId],
+    });
+    return Number(details.claimableAt);
   }
 
   /**
@@ -37,13 +50,26 @@ export class StakingVault {
    * undefined we probe with the zero address, which is never whitelisted, so
    * instantWithdrawAvailable reflects only the global cooldownEnabled flag.
    */
-  async readState(arbAddress?: string): Promise<VaultState> {
-    const probe = arbAddress ?? ethers.ZeroAddress;
+  async readState(arbAddress?: Address): Promise<VaultState> {
+    const probe = arbAddress ?? zeroAddress;
     const [assetsPerShare, cooldownSeconds, cooldownEnabled, maxRedeem] = await Promise.all([
-      this.vault.previewRedeem(ONE_SHARE) as Promise<bigint>,
-      this.vault.cooldownDuration() as Promise<bigint>,
-      this.vault.cooldownEnabled() as Promise<boolean>,
-      this.vault.maxRedeem(probe) as Promise<bigint>,
+      this.previewRedeem(ONE_SHARE),
+      this.client.readContract({
+        address: SVUSD_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: "cooldownDuration",
+      }),
+      this.client.readContract({
+        address: SVUSD_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: "cooldownEnabled",
+      }),
+      this.client.readContract({
+        address: SVUSD_ADDRESS,
+        abi: VAULT_ABI,
+        functionName: "maxRedeem",
+        args: [probe],
+      }),
     ]);
 
     return {

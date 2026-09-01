@@ -2,16 +2,24 @@ import {z} from "zod";
 
 export interface Config {
   rpcUrl: string;
-  /** Whether a keeper key is present (live) or not (dry-run). */
-  live: boolean;
+  /**
+   * Broadcast gate. "dry-run" (default) simulates every send and never
+   * broadcasts; "live" broadcasts, and is only reachable with a key + address.
+   */
+  txMode: "dry-run" | "live";
+  /** Kill switch: when true the executor simulates but refuses to broadcast. */
+  paused: boolean;
   privateKey?: string;
   arbitrageAddress?: string;
+  /** Hard ceiling on VUSD spent per open, enforced before any send. */
+  maxTxSpendVusd: number;
+  /** Slippage tolerance applied to the entry quote to set the swap's minAmountOut, in bps. */
+  entrySlippageBps: number;
 
-  /** Minimum NET profit (after gas + buffer) to flag/execute, in VUSD. */
-  minProfitVusd: number;
   /**
-   * On-chain profit floor mirror, in bps of VUSD spent. Matches the contract's
-   * `minProfitBps` so the monitor never flags an open the contract would reject.
+   * Fallback profit floor (bps of VUSD spent) used ONLY when no ARBITRAGE_ADDRESS is wired.
+   * With a contract configured the bot reads its live `minProfitBps` each tick instead, so
+   * the gate never drifts from the deployed floor.
    */
   minProfitBps: number;
   /** Off-chain gas-cost assumption for a full open+claim round trip, in VUSD. */
@@ -55,17 +63,26 @@ const EnvSchema = z
     ETHEREUM_RPC_URL: z.string().min(1, "required"),
     PRIVATE_KEY: z.preprocess(emptyToUndefined, z.string().trim().optional()),
     ARBITRAGE_ADDRESS: z.preprocess(emptyToUndefined, z.string().trim().optional()),
-    MIN_PROFIT_VUSD: numberEnv(25),
     MIN_PROFIT_BPS: numberEnv(0, true),
     ESTIMATED_GAS_COST_VUSD: numberEnv(15),
     BUFFER_BPS: numberEnv(30, true),
     MAX_GAS_PRICE_GWEI: numberEnv(40, true),
     PROBE_SIZES_VUSD: z.preprocess(emptyToUndefined, z.string().optional()),
     POLL_INTERVAL_MS: numberEnv(15000, true),
+    TX_MODE: z.preprocess(emptyToUndefined, z.enum(["dry-run", "live"]).default("dry-run")),
+    PAUSED: z
+      .preprocess(emptyToUndefined, z.string().default("false"))
+      .transform((v) => v.toLowerCase() === "true" || v === "1"),
+    MAX_TX_SPEND_VUSD: numberEnv(10000),
+    ENTRY_SLIPPAGE_BPS: numberEnv(50, true),
   })
   .refine((env) => !env.PRIVATE_KEY || env.ARBITRAGE_ADDRESS, {
-    message: "PRIVATE_KEY is set (live mode) but ARBITRAGE_ADDRESS is missing",
+    message: "PRIVATE_KEY is set but ARBITRAGE_ADDRESS is missing",
     path: ["ARBITRAGE_ADDRESS"],
+  })
+  .refine((env) => env.TX_MODE !== "live" || (env.PRIVATE_KEY && env.ARBITRAGE_ADDRESS), {
+    message: "TX_MODE=live requires both PRIVATE_KEY and ARBITRAGE_ADDRESS",
+    path: ["TX_MODE"],
   });
 
 export function loadConfig(): Config {
@@ -80,10 +97,12 @@ export function loadConfig(): Config {
 
   return {
     rpcUrl: env.ETHEREUM_RPC_URL,
-    live: Boolean(env.PRIVATE_KEY),
+    txMode: env.TX_MODE,
+    paused: env.PAUSED,
     privateKey: env.PRIVATE_KEY,
     arbitrageAddress: env.ARBITRAGE_ADDRESS,
-    minProfitVusd: env.MIN_PROFIT_VUSD,
+    maxTxSpendVusd: env.MAX_TX_SPEND_VUSD,
+    entrySlippageBps: env.ENTRY_SLIPPAGE_BPS,
     minProfitBps: env.MIN_PROFIT_BPS,
     estimatedGasCostVusd: env.ESTIMATED_GAS_COST_VUSD,
     bufferBps: env.BUFFER_BPS,

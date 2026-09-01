@@ -1,7 +1,8 @@
-import {ethers} from "ethers";
+import {type Address, formatUnits, parseUnits} from "viem";
 import type {Config} from "./config.js";
 import {VUSD_DECIMALS} from "./constants.js";
 import type {CurveQuoter} from "./curve.js";
+import {quoteEntry} from "./quote.js";
 import type {StakingVault} from "./stakingVault.js";
 import type {Opportunity, VaultState} from "./types.js";
 
@@ -28,25 +29,25 @@ export class Monitor {
     private curve: CurveQuoter,
     private vault: StakingVault,
   ) {
-    this.toVusd = (raw) => Number(ethers.formatUnits(raw, VUSD_DECIMALS));
-    this.toVusdUnits = (human) => ethers.parseUnits(human.toFixed(VUSD_DECIMALS), VUSD_DECIMALS);
+    this.toVusd = (raw) => Number(formatUnits(raw, VUSD_DECIMALS));
+    this.toVusdUnits = (human) => parseUnits(human.toFixed(VUSD_DECIMALS), VUSD_DECIMALS);
   }
 
   async readVault(): Promise<VaultState> {
-    return this.vault.readState(this.config.arbitrageAddress);
+    return this.vault.readState(this.config.arbitrageAddress as Address | undefined);
   }
 
   /** Simulate one probe size. Returns null if any leg fails to quote. */
-  async evaluate(sizeVusd: number): Promise<Opportunity | null> {
+  async evaluate(sizeVusd: number, minProfitBps: number): Promise<Opportunity | null> {
     const sizeUnits = this.toVusdUnits(sizeVusd);
 
-    // Entry: VUSD → sVUSD (Curve, impact included).
-    const sharesOut = await this.curve.vusdToSvusd(sizeUnits);
-    if (sharesOut <= 0n) return null;
-
-    // requestRedeem locks this VUSD amount for the shares (rate fixed at request).
-    const vusdLocked = await this.vault.previewRedeem(sharesOut);
-    if (vusdLocked <= 0n) return null;
+    // Buy sVUSD (impact included), then the VUSD requestRedeem would lock for it (rate fixed at request).
+    const {shares: sharesOut, locked: vusdLocked} = await quoteEntry(
+      this.curve,
+      this.vault,
+      sizeUnits,
+    );
+    if (sharesOut <= 0n || vusdLocked <= 0n) return null;
 
     const vusdLockedHuman = this.toVusd(vusdLocked);
     const dexBuyPrice = sizeVusd / (Number(sharesOut) / 1e18);
@@ -58,9 +59,9 @@ export class Monitor {
     const buffer = (this.config.bufferBps / 10000) * sizeVusd;
     const netProfitAfterBufferVusd = netProfitVusd - buffer;
 
-    // Mirror the contract's open floor: spent + max(minProfit, ceil(spent*bps/1e4)).
-    const bpsFloor = Math.ceil((sizeVusd * this.config.minProfitBps) / 10000);
-    const contractFloorVusd = sizeVusd + Math.max(this.config.minProfitVusd, bpsFloor);
+    // Mirror the contract's static floor: spent + ceil(spent*bps/1e4). The per-open minProfit the
+    // job derives from a fresh simulation is self-consistent with this quote, so it never binds here.
+    const contractFloorVusd = sizeVusd + Math.ceil((sizeVusd * minProfitBps) / 10000);
 
     const meetsContractFloor = vusdLockedHuman >= contractFloorVusd;
 
@@ -78,11 +79,11 @@ export class Monitor {
     };
   }
 
-  /** Evaluate every configured probe size. Best (highest buffered net) first. */
-  async scan(): Promise<Opportunity[]> {
+  /** Evaluate every configured probe size against `minProfitBps`. Best (highest buffered net) first. */
+  async scan(minProfitBps: number): Promise<Opportunity[]> {
     const results = await Promise.all(
       this.config.probeSizesVusd.map((s) =>
-        this.evaluate(s).catch((e) => {
+        this.evaluate(s, minProfitBps).catch((e) => {
           console.warn(`  probe ${s}: quote failed: ${e instanceof Error ? e.message : e}`);
           return null;
         }),

@@ -1,7 +1,12 @@
 import "dotenv/config";
-import {ethers} from "ethers";
+import {type Address, createPublicClient, createWalletClient, http} from "viem";
+import {privateKeyToAccount} from "viem/accounts";
+import {mainnet} from "viem/chains";
+import {Arbitrage} from "./arbitrage.js";
 import {loadConfig} from "./config.js";
 import {CurveQuoter} from "./curve.js";
+import {Executor} from "./executor.js";
+import {Jobs} from "./jobs.js";
 import {Monitor} from "./monitor.js";
 import {StakingVault} from "./stakingVault.js";
 import type {Opportunity} from "./types.js";
@@ -12,59 +17,97 @@ function banner(mode: string, cfg: ReturnType<typeof loadConfig>) {
   console.log("──────────────────────────────────────────────────────────────");
   console.log("  sVUSD Arbitrage Bot (VUSD-native)");
   console.log(`  Mode:        ${mode}`);
-  console.log(`  Min profit:  ${cfg.minProfitVusd} VUSD (floor ${cfg.minProfitBps} bps)`);
-  console.log(`  Buffer:      ${cfg.bufferBps} bps`);
+  console.log(`  Floor:       ${cfg.minProfitBps} bps`);
+  console.log(`  Buffer:      ${cfg.bufferBps} bps | slippage ${cfg.entrySlippageBps} bps`);
   console.log(`  Probe sizes: ${cfg.probeSizesVusd.join(", ")} VUSD`);
   console.log("──────────────────────────────────────────────────────────────");
 }
 
 function fmt(o: Opportunity): string {
   const flag = o.profitable ? "✅ PROFITABLE" : "  below-gate ";
+  const locked = Number(o.vusdLocked) / 1e18;
   return (
-    `${flag} size=${o.sizeVusd}VUSD ` +
-    `buy=${o.dexBuyPrice.toFixed(4)} ` +
-    `gross=${o.grossSpreadBps.toFixed(1)}bps ` +
-    `locked=${o.grossProfitVusd.toFixed(2)}VUSD ` +
-    `net=${o.netProfitVusd.toFixed(2)} ` +
-    `netAfterBuf=${o.netProfitAfterBufferVusd.toFixed(2)}VUSD`
+    `${flag} ${o.sizeVusd}→${locked.toFixed(2)} VUSD ` +
+    `buyPrice ${o.dexBuyPrice.toFixed(4)} | ` +
+    `profit ${o.grossProfitVusd.toFixed(2)} gross (${o.grossSpreadBps.toFixed(1)} profit bps) ` +
+    `→ ${o.netProfitVusd.toFixed(2)} after gas ` +
+    `→ ${o.netProfitAfterBufferVusd.toFixed(2)} after buffer`
   );
+}
+
+/** The keeper key is stored without a 0x prefix (see .env.example); viem needs it. */
+function normalizeKey(key: string): `0x${string}` {
+  return (key.startsWith("0x") ? key : `0x${key}`) as `0x${string}`;
 }
 
 async function main() {
   const cfg = loadConfig();
-  const provider = new ethers.JsonRpcProvider(cfg.rpcUrl);
+  const publicClient = createPublicClient({
+    chain: mainnet,
+    transport: http(cfg.rpcUrl),
+    batch: {multicall: true},
+  });
+  const vault = new StakingVault(publicClient);
+  const monitor = new Monitor(cfg, new CurveQuoter(publicClient), vault);
 
-  // Monitor-only: even with a key present we never submit here yet.
-  banner(cfg.live ? "LIVE (execution not wired — monitor)" : "DRY-RUN", cfg);
+  // A contract (read-only) whenever one is configured, so the bot reads the live on-chain
+  // floor as the source of truth even in dry-run. Jobs need a signer on top of that.
+  let arb: Arbitrage | undefined;
+  let jobs: Jobs | undefined;
+  if (cfg.arbitrageAddress) {
+    const account = cfg.privateKey ? privateKeyToAccount(normalizeKey(cfg.privateKey)) : undefined;
+    const walletClient = account
+      ? createWalletClient({account, chain: mainnet, transport: http(cfg.rpcUrl)})
+      : undefined;
+    arb = new Arbitrage(cfg.arbitrageAddress as Address, publicClient, walletClient, account);
+    if (account) {
+      const executor = new Executor(cfg, publicClient, account);
+      jobs = new Jobs(cfg, publicClient, vault, arb, executor, monitor);
+      const isKeeper = await arb.isKeeper(account.address);
+      console.log(`  executor: ${account.address} keeper=${isKeeper} arb=${cfg.arbitrageAddress}`);
+      if (!isKeeper)
+        console.warn(
+          "  ⚠ signer is NOT an enrolled keeper; opens/settles will revert in simulation",
+        );
+    }
+  }
 
-  const monitor = new Monitor(cfg, new CurveQuoter(provider), new StakingVault(provider));
+  const mode = jobs
+    ? `${cfg.txMode.toUpperCase()}${cfg.paused ? " (PAUSED)" : ""}`
+    : "DRY-RUN (monitor-only)";
+  banner(mode, cfg);
 
   const tick = async () => {
     try {
-      const vault = await monitor.readVault();
-      const atomic = vault.instantWithdrawAvailable
+      const state = await monitor.readVault();
+      const atomic = state.instantWithdrawAvailable
         ? " | ⚡ INSTANT redeem available (atomic!)"
         : "";
       console.log(
-        `[${ts()}] fair=${vault.fairValueVusdPerShare.toFixed(4)} VUSD/sVUSD ` +
-          `| cooldown=${(vault.cooldownSeconds / 86400).toFixed(1)}d` +
-          `${atomic}`,
+        `[${ts()}] fair=${state.fairValueVusdPerShare.toFixed(4)} VUSD/sVUSD ` +
+          `| cooldown=${(state.cooldownSeconds / 86400).toFixed(1)}d${atomic}`,
       );
 
-      const opps = await monitor.scan();
-      if (!opps.length) {
-        console.log(`  no quotable opportunities this tick`);
-        return;
-      }
+      const minProfitBps = arb ? Number(await arb.minProfitBps()) : cfg.minProfitBps;
+      const opps = await monitor.scan(minProfitBps);
+      if (!opps.length) console.log(`  no quotable opportunities this tick`);
       for (const o of opps) console.log(`  ${fmt(o)}`);
 
       const best = opps[0];
-      if (best.profitable) {
+      if (best?.profitable) {
         console.log(
           `  → best actionable: size=${best.sizeVusd}VUSD ` +
-            `net(after buffer)=${best.netProfitAfterBufferVusd.toFixed(2)}VUSD ` +
-            `[monitor — would open position]`,
+            `net(after buffer)=${best.netProfitAfterBufferVusd.toFixed(2)}VUSD`,
         );
+      }
+
+      // Jobs run every tick: open acts only on an affordable profitable opp; settle
+      // sweeps matured requests regardless of whether any opportunity quoted.
+      if (jobs) {
+        const block = await publicClient.getBlock();
+        const nowSec = Number(block.timestamp);
+        await jobs.open(opps, minProfitBps);
+        await jobs.settle(nowSec);
       }
     } catch (e) {
       console.error(`[${ts()}] tick error:`, e instanceof Error ? e.message : e);
