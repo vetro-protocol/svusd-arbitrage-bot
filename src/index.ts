@@ -1,5 +1,5 @@
 import "dotenv/config";
-import {type Address, createPublicClient, createWalletClient, http} from "viem";
+import {type Address, createPublicClient, createWalletClient, formatEther, http} from "viem";
 import {privateKeyToAccount} from "viem/accounts";
 import {mainnet} from "viem/chains";
 import {Arbitrage} from "./arbitrage.js";
@@ -19,19 +19,19 @@ function banner(mode: string, cfg: ReturnType<typeof loadConfig>) {
   console.log(`  Mode:        ${mode}`);
   console.log(`  Floor:       ${cfg.minProfitBps} bps`);
   console.log(`  Buffer:      ${cfg.bufferBps} bps | slippage ${cfg.entrySlippageBps} bps`);
-  console.log(`  Probe sizes: ${cfg.probeSizesVusd.join(", ")} VUSD`);
+  console.log(`  Probe sizes: ${cfg.probeAmounts.map((a) => formatEther(a)).join(", ")} VUSD`);
   console.log("──────────────────────────────────────────────────────────────");
 }
 
 function fmt(o: Opportunity): string {
   const flag = o.profitable ? "✅ PROFITABLE" : "  below-gate ";
-  const locked = Number(o.vusdLocked) / 1e18;
+  const vusd = (raw: bigint) => Number(formatEther(raw)).toFixed(2);
   return (
-    `${flag} ${o.sizeVusd}→${locked.toFixed(2)} VUSD ` +
+    `${flag} ${formatEther(o.vusdAmount)}→${vusd(o.vusdLocked)} VUSD ` +
     `buyPrice ${o.dexBuyPrice.toFixed(4)} | ` +
-    `profit ${o.grossProfitVusd.toFixed(2)} gross (${o.grossSpreadBps.toFixed(1)} profit bps) ` +
-    `→ ${o.netProfitVusd.toFixed(2)} after gas ` +
-    `→ ${o.netProfitAfterBufferVusd.toFixed(2)} after buffer`
+    `profit ${vusd(o.grossProfitVusd)} gross (${o.grossSpreadBps.toFixed(1)} profit bps) ` +
+    `→ ${vusd(o.netProfitVusd)} after gas ` +
+    `→ ${vusd(o.netProfitAfterBufferVusd)} after buffer`
   );
 }
 
@@ -96,8 +96,8 @@ async function main() {
       const best = opps[0];
       if (best?.profitable) {
         console.log(
-          `  → best actionable: size=${best.sizeVusd}VUSD ` +
-            `net(after buffer)=${best.netProfitAfterBufferVusd.toFixed(2)}VUSD`,
+          `  → best actionable: size=${formatEther(best.vusdAmount)}VUSD ` +
+            `net(after buffer)=${Number(formatEther(best.netProfitAfterBufferVusd)).toFixed(2)}VUSD`,
         );
       }
 

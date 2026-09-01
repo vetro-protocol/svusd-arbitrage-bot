@@ -1,6 +1,5 @@
-import {type Address, formatUnits, parseUnits} from "viem";
+import {type Address, formatEther} from "viem";
 import type {Config} from "./config.js";
-import {VUSD_DECIMALS} from "./constants.js";
 import type {CurveQuoter} from "./curve.js";
 import {quoteEntry} from "./quote.js";
 import type {StakingVault} from "./stakingVault.js";
@@ -14,59 +13,52 @@ import type {Opportunity, VaultState} from "./types.js";
  *   sVUSD --requestRedeem--> VUSD locked at rate       (fixed for 7 days)
  *   VUSD  --claimWithdraw--> reserves                  (no exit swap, no Gateway)
  *
- * Profit (VUSD) = vusdLocked − sizeVusd − gas, then minus a prudence buffer. The
+ * Profit (VUSD) = vusdLocked − vusdAmount − gas, then minus a prudence buffer. The
  * spread is VUSD-denominated and fixed at open, so VUSD depeg does not erode it.
  *
  * The gate mirrors the contract's `open` floor (spent + max(minProfit, bps)), so
  * the monitor never flags an opportunity the on-chain contract would reject.
  */
 export class Monitor {
-  private toVusd: (raw: bigint) => number;
-  private toVusdUnits: (human: number) => bigint;
-
   constructor(
     private config: Config,
     private curve: CurveQuoter,
     private vault: StakingVault,
-  ) {
-    this.toVusd = (raw) => Number(formatUnits(raw, VUSD_DECIMALS));
-    this.toVusdUnits = (human) => parseUnits(human.toFixed(VUSD_DECIMALS), VUSD_DECIMALS);
-  }
+  ) {}
 
   async readVault(): Promise<VaultState> {
     return this.vault.readState(this.config.arbitrageAddress as Address | undefined);
   }
 
   /** Simulate one probe size. Returns null if any leg fails to quote. */
-  async evaluate(sizeVusd: number, minProfitBps: number): Promise<Opportunity | null> {
-    const sizeUnits = this.toVusdUnits(sizeVusd);
-
+  async evaluate(vusdAmount: bigint, minProfitBps: number): Promise<Opportunity | null> {
     // Buy sVUSD (impact included), then the VUSD requestRedeem would lock for it (rate fixed at request).
     const {shares: sharesOut, locked: vusdLocked} = await quoteEntry(
       this.curve,
       this.vault,
-      sizeUnits,
+      vusdAmount,
     );
     if (sharesOut <= 0n || vusdLocked <= 0n) return null;
 
-    const vusdLockedHuman = this.toVusd(vusdLocked);
-    const dexBuyPrice = sizeVusd / (Number(sharesOut) / 1e18);
-
-    const grossProfitVusd = vusdLockedHuman - sizeVusd;
-    const grossSpreadBps = (grossProfitVusd / sizeVusd) * 10000;
-
+    // Money math in base units so the gate is bit-exact with the contract; only prices and
+    // bps (ratios, not amounts) are floats, derived for display.
+    const grossProfitVusd = vusdLocked - vusdAmount;
     const netProfitVusd = grossProfitVusd - this.config.estimatedGasCostVusd;
-    const buffer = (this.config.bufferBps / 10000) * sizeVusd;
+    const buffer = (vusdAmount * BigInt(this.config.bufferBps)) / 10_000n;
     const netProfitAfterBufferVusd = netProfitVusd - buffer;
 
-    // Mirror the contract's static floor: spent + ceil(spent*bps/1e4). The per-open minProfit the
-    // job derives from a fresh simulation is self-consistent with this quote, so it never binds here.
-    const contractFloorVusd = sizeVusd + Math.ceil((sizeVusd * minProfitBps) / 10000);
+    // Mirror the contract's static floor exactly: spent + ceilDiv(spent*bps, 1e4). The per-open
+    // minProfit the job derives from a fresh quote is self-consistent with this, so it never binds here.
+    const bpsFloor = (vusdAmount * BigInt(minProfitBps) + 9_999n) / 10_000n;
+    const contractFloorVusd = vusdAmount + bpsFloor;
+    const meetsContractFloor = vusdLocked >= contractFloorVusd;
 
-    const meetsContractFloor = vusdLockedHuman >= contractFloorVusd;
+    const size = Number(formatEther(vusdAmount));
+    const dexBuyPrice = size / Number(formatEther(sharesOut));
+    const grossSpreadBps = (Number(formatEther(grossProfitVusd)) / size) * 10_000;
 
     return {
-      sizeVusd,
+      vusdAmount,
       sharesOut,
       dexBuyPrice,
       vusdLocked,
@@ -75,22 +67,24 @@ export class Monitor {
       netProfitVusd,
       netProfitAfterBufferVusd,
       contractFloorVusd,
-      profitable: meetsContractFloor && netProfitAfterBufferVusd >= 0,
+      profitable: meetsContractFloor && netProfitAfterBufferVusd >= 0n,
     };
   }
 
   /** Evaluate every configured probe size against `minProfitBps`. Best (highest buffered net) first. */
   async scan(minProfitBps: number): Promise<Opportunity[]> {
     const results = await Promise.all(
-      this.config.probeSizesVusd.map((s) =>
-        this.evaluate(s, minProfitBps).catch((e) => {
-          console.warn(`  probe ${s}: quote failed: ${e instanceof Error ? e.message : e}`);
+      this.config.probeAmounts.map((a) =>
+        this.evaluate(a, minProfitBps).catch((e) => {
+          console.warn(
+            `  probe ${formatEther(a)}: quote failed: ${e instanceof Error ? e.message : e}`,
+          );
           return null;
         }),
       ),
     );
     return results
       .filter((o): o is Opportunity => o !== null)
-      .sort((a, b) => b.netProfitAfterBufferVusd - a.netProfitAfterBufferVusd);
+      .sort((a, b) => Number(b.netProfitAfterBufferVusd - a.netProfitAfterBufferVusd));
   }
 }

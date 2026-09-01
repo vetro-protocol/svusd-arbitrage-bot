@@ -1,4 +1,4 @@
-import {type Account, formatGwei, type Hash, type PublicClient} from "viem";
+import {type Account, formatEther, formatGwei, type Hash, type PublicClient} from "viem";
 import type {Config} from "./config.js";
 
 /**
@@ -12,8 +12,8 @@ export interface TxPlan {
   label: string;
   simulate: () => Promise<unknown>;
   send: () => Promise<Hash>;
-  /** VUSD this call spends, checked against the ceiling. Omit for non-spending calls (settle). */
-  spendVusd?: number;
+  /** VUSD this call spends (base units), checked against the ceiling. Omit for non-spending calls (settle). */
+  spendVusd?: bigint;
 }
 
 export type ExecStatus =
@@ -54,7 +54,7 @@ export class Executor {
     }
 
     if (plan.spendVusd != null && plan.spendVusd > this.config.maxTxSpendVusd) {
-      const detail = `spend ${plan.spendVusd} VUSD > ceiling ${this.config.maxTxSpendVusd} VUSD`;
+      const detail = `spend ${formatEther(plan.spendVusd)} VUSD > ceiling ${formatEther(this.config.maxTxSpendVusd)} VUSD`;
       this.log(plan.label, `skip: ${detail}`);
       return {status: "skipped-spend-cap", detail};
     }

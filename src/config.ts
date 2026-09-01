@@ -1,3 +1,4 @@
+import {parseEther} from "viem";
 import {z} from "zod";
 
 export interface Config {
@@ -11,8 +12,8 @@ export interface Config {
   paused: boolean;
   privateKey?: string;
   arbitrageAddress?: string;
-  /** Hard ceiling on VUSD spent per open, enforced before any send. */
-  maxTxSpendVusd: number;
+  /** Hard ceiling on VUSD spent per open (base units), enforced before any send. */
+  maxTxSpendVusd: bigint;
   /** Slippage tolerance applied to the entry quote to set the swap's minAmountOut, in bps. */
   entrySlippageBps: number;
 
@@ -22,8 +23,8 @@ export interface Config {
    * the gate never drifts from the deployed floor.
    */
   minProfitBps: number;
-  /** Off-chain gas-cost assumption for a full open+claim round trip, in VUSD. */
-  estimatedGasCostVusd: number;
+  /** Off-chain gas-cost assumption for a full open+claim round trip (VUSD, base units). */
+  estimatedGasCostVusd: bigint;
   /**
    * Prudence buffer (bps of size) held back on top of gas. The arb spread is
    * VUSD-native and fixed at open, so VUSD depeg does not erode it; this is a
@@ -32,8 +33,8 @@ export interface Config {
   bufferBps: number;
   maxGasPriceGwei: number;
 
-  /** VUSD notionals the monitor simulates each poll (ascending). */
-  probeSizesVusd: number[];
+  /** VUSD notionals the monitor simulates each poll (base units, ascending). */
+  probeAmounts: bigint[];
   pollIntervalMs: number;
 }
 
@@ -101,13 +102,13 @@ export function loadConfig(): Config {
     paused: env.PAUSED,
     privateKey: env.PRIVATE_KEY,
     arbitrageAddress: env.ARBITRAGE_ADDRESS,
-    maxTxSpendVusd: env.MAX_TX_SPEND_VUSD,
+    maxTxSpendVusd: parseEther(env.MAX_TX_SPEND_VUSD.toString()),
     entrySlippageBps: env.ENTRY_SLIPPAGE_BPS,
     minProfitBps: env.MIN_PROFIT_BPS,
-    estimatedGasCostVusd: env.ESTIMATED_GAS_COST_VUSD,
+    estimatedGasCostVusd: parseEther(env.ESTIMATED_GAS_COST_VUSD.toString()),
     bufferBps: env.BUFFER_BPS,
     maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI,
-    probeSizesVusd: parseSizes(env.PROBE_SIZES_VUSD),
+    probeAmounts: parseSizes(env.PROBE_SIZES_VUSD).map((n) => parseEther(n.toString())),
     pollIntervalMs: env.POLL_INTERVAL_MS,
   };
 }

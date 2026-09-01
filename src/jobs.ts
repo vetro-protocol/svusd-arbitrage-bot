@@ -1,7 +1,7 @@
-import {formatUnits, type PublicClient, parseAbi, parseUnits} from "viem";
+import {formatEther, type PublicClient, parseAbi} from "viem";
 import type {Arbitrage} from "./arbitrage.js";
 import type {Config} from "./config.js";
-import {VUSD_ADDRESS, VUSD_DECIMALS} from "./constants.js";
+import {VUSD_ADDRESS} from "./constants.js";
 import type {Executor} from "./executor.js";
 import type {Monitor} from "./monitor.js";
 import type {StakingVault} from "./stakingVault.js";
@@ -25,49 +25,40 @@ export class Jobs {
     private monitor: Monitor,
   ) {}
 
-  private toUnits(human: number): bigint {
-    return parseUnits(human.toFixed(VUSD_DECIMALS), VUSD_DECIMALS);
-  }
-  private toHuman(raw: bigint): number {
-    return Number(formatUnits(raw, VUSD_DECIMALS));
-  }
-
   /** Open the best profitable opportunity the contract can afford, at most one per tick. */
   async open(opps: Opportunity[], minProfitBps: number): Promise<void> {
-    const balance = await this.client.readContract({
+    const reserves = await this.client.readContract({
       address: VUSD_ADDRESS,
       abi: ERC20_ABI,
       functionName: "balanceOf",
       args: [this.arb.address],
     });
-    const reserves = this.toHuman(balance);
-    const cap = Math.min(reserves, this.config.maxTxSpendVusd);
+    const cap = reserves < this.config.maxTxSpendVusd ? reserves : this.config.maxTxSpendVusd;
 
-    const candidate = opps.find((o) => o.profitable && o.sizeVusd <= cap);
+    const candidate = opps.find((o) => o.profitable && o.vusdAmount <= cap);
     if (!candidate) return;
 
     // Re-evaluate the chosen size on-chain right now: the tick's quote may be stale, and we must
     // not open on an edge that has since vanished. Bail unless it STILL clears the full gate.
-    const fresh = await this.monitor.evaluate(candidate.sizeVusd, minProfitBps);
+    const fresh = await this.monitor.evaluate(candidate.vusdAmount, minProfitBps);
     if (!fresh?.profitable) return;
 
-    const sizeUnits = this.toUnits(fresh.sizeVusd);
     // Both floors are a tight discount of this fresh, still-profitable simulation, so a sandwich can
     // only push the fill down to our tolerance. `fresh.profitable` guarantees vusdLocked > spent, so
     // minProfit is always a positive floor. The contract enforces max(minProfit, minProfitBps).
     const tolerance = BigInt(10_000 - this.config.entrySlippageBps);
     const minShares = (fresh.sharesOut * tolerance) / 10_000n;
-    const minProfit = ((fresh.vusdLocked - sizeUnits) * tolerance) / 10_000n;
+    const minProfit = ((fresh.vusdLocked - fresh.vusdAmount) * tolerance) / 10_000n;
 
     const buy = buildEntrySwap({
-      amountVusd: sizeUnits,
+      amountVusd: fresh.vusdAmount,
       minSvusdOut: minShares,
       receiver: this.arb.address,
     });
-    const plan = this.arb.openPosition(sizeUnits, buy, minProfit);
+    const plan = this.arb.openPosition(fresh.vusdAmount, buy, minProfit);
     await this.executor.run({
-      label: `open ${fresh.sizeVusd}VUSD`,
-      spendVusd: fresh.sizeVusd,
+      label: `open ${formatEther(fresh.vusdAmount)}VUSD`,
+      spendVusd: fresh.vusdAmount,
       simulate: plan.simulate,
       send: plan.send,
     });
