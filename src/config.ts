@@ -36,6 +36,11 @@ export interface Config {
   /** VUSD notionals the monitor simulates each poll (base units, ascending). */
   probeAmounts: bigint[];
   pollIntervalMs: number;
+
+  /** Port the /status health server binds. Render injects PORT; defaults to 10000 locally. */
+  port: number;
+  /** Idle window before /status reports 503; must exceed the slowest tick (a live tx mining). */
+  healthStaleMs: number;
 }
 
 const DEFAULT_SIZES = ["1000", "5000", "10000", "25000"];
@@ -87,7 +92,9 @@ const EnvSchema = z
     BUFFER_BPS: bpsEnv(30),
     MAX_GAS_PRICE_GWEI: intEnv(40),
     PROBE_SIZES_VUSD: z.preprocess(emptyToUndefined, z.string().optional()),
-    POLL_INTERVAL_MS: intEnv(15000),
+    POLL_INTERVAL_MS: intEnv(15_000),
+    PORT: intEnv(10000),
+    HEALTH_STALE_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().optional()),
     TX_MODE: z.preprocess(emptyToUndefined, z.enum(["dry-run", "live"]).default("dry-run")),
     PAUSED: z
       .preprocess(emptyToUndefined, z.string().default("false"))
@@ -129,5 +136,7 @@ export function loadConfig(): Config {
     maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI,
     probeAmounts: parseProbeAmounts(env.PROBE_SIZES_VUSD),
     pollIntervalMs: env.POLL_INTERVAL_MS,
+    port: env.PORT,
+    healthStaleMs: env.HEALTH_STALE_MS ?? Math.max(env.POLL_INTERVAL_MS * 5, 120_000),
   };
 }

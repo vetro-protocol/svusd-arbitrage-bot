@@ -41,3 +41,21 @@ The monitor quotes the real pools each tick and flags profitable opportunities; 
 never submits a transaction. `npm run typecheck` and `npm run build` must pass, and
 `forge test` runs the contract's fork suite against mainnet.
 
+## Deploy (Render)
+
+[`render.yaml`](render.yaml) is a one-service blueprint: a single `web` instance
+that runs the poll loop and serves `GET /status` for the health check.
+
+- **One instance, always.** The bot signs from a single EOA, so `numInstances` is
+  pinned to `1` and must stay there; a second instance would double-broadcast on
+  the same nonce.
+- **Health check.** `/status` returns `200` with a JSON snapshot (mode, tick count,
+  open positions, last error) while the loop is live, and `503` if a tick hangs, so
+  Render restarts a stalled keeper. The body carries no key or RPC URL, so it is
+  safe on the public URL.
+- **Secrets** (`ETHEREUM_RPC_URL`, `PRIVATE_KEY`, `ARBITRAGE_ADDRESS`) are
+  `sync:false`: set them in the Render dashboard, never in git.
+- **Operational toggles** (`TX_MODE`, `PAUSED`) are also `sync:false`, so they are
+  dashboard-owned and a deploy never reverts a hand-flip. Both default safe when
+  unset (dry-run, unpaused); set `TX_MODE=live` once you have watched a dry-run tick.
+

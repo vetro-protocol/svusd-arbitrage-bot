@@ -8,6 +8,7 @@ import {CurveQuoter} from "./curve.js";
 import {Executor} from "./executor.js";
 import {Jobs} from "./jobs.js";
 import {Monitor} from "./monitor.js";
+import {Health, startHealthServer} from "./server.js";
 import {StakingVault} from "./stakingVault.js";
 import type {Opportunity} from "./types.js";
 
@@ -77,7 +78,11 @@ async function main() {
     : "DRY-RUN (monitor-only)";
   banner(mode, cfg);
 
-  const tick = async () => {
+  const health = new Health(mode, cfg.txMode, cfg.paused, cfg.healthStaleMs);
+  startHealthServer(health, cfg.port);
+
+  // Returns the current open-position count (or null when running monitor-only).
+  const tick = async (): Promise<number | null> => {
     try {
       const state = await monitor.readVault();
       const atomic = state.instantWithdrawAvailable
@@ -110,17 +115,24 @@ async function main() {
         // opens would revert, so skip them and let settle keep clearing matured requests.
         if (state.cooldownEnabled) await jobs.open(opps, minProfitBps);
         else console.log(`  vault cooldown disabled; skipping opens`);
-        await jobs.settle(nowSec);
+        return await jobs.settle(nowSec);
       }
+      return null;
     } catch (e) {
-      console.error(`[${ts()}] tick error:`, e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[${ts()}] tick error:`, msg);
+      health.recordError(msg);
+      return null;
     }
   };
 
   // Serialize ticks: schedule the next only after the current resolves, so a slow tick (a live tx
-  // blocks until mined) can never overlap and broadcast a duplicate open/settle.
+  // blocks until mined) can never overlap and broadcast a duplicate open/settle. tickStart/tickEnd
+  // stamp liveness for /status.
   const loop = async () => {
-    await tick();
+    health.tickStart();
+    const openPositions = await tick();
+    health.tickEnd(openPositions);
     setTimeout(loop, cfg.pollIntervalMs);
   };
   await loop();
