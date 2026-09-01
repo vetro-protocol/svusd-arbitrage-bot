@@ -10,11 +10,12 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src",
-    "format": "biome check --write src"
+    "format": "biome check --write src",
+    "rehearse": "bash scripts/rehearse.sh"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
-    "ethers": "^6.13.5",
+    "viem": "^2.56.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

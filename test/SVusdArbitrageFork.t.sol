@@ -34,6 +34,10 @@ contract CurveTwoHop {
 contract SVusdArbitrageForkTest is Test {
     address constant SVUSD = 0x476310E34D2810f7d79C43A74E4D79405bd7a925;
     address constant VUSD = 0xCa83DDE9c22254f58e771bE5E157773212AcBAc3;
+    address constant CRVUSD = 0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E;
+    address constant CURVE_ROUTER = 0x16C6521Dff6baB339122a0FE25a9116693265353;
+    address constant POOL_VUSD_CRVUSD = 0xAFbA5800252530CE71b03Ba2BCa2Dd5aE44a7F3d;
+    address constant POOL_CRVUSD_SVUSD = 0x659B7B5Dd7936BF2f2d198A87C1583049D1D91d3;
 
     SVusdArbitrage internal arb;
     CurveTwoHop internal hop;
@@ -57,6 +61,44 @@ contract SVusdArbitrageForkTest is Test {
             approveTarget: address(hop),
             swapCalldata: abi.encodeCall(CurveTwoHop.swap, (amount, 0)),
             minAmountOut: 1
+        });
+    }
+
+    /// @dev The exact SwapParams the TS `buildEntrySwap` emits; mirrors src/constants.ts.
+    function _routerBuy(uint256 amount, uint256 minOut, address receiver)
+        internal
+        pure
+        returns (SVusdArbitrage.SwapParams memory)
+    {
+        address[11] memory route;
+        route[0] = VUSD;
+        route[1] = POOL_VUSD_CRVUSD;
+        route[2] = CRVUSD;
+        route[3] = POOL_CRVUSD_SVUSD;
+        route[4] = SVUSD;
+
+        uint256[5][5] memory sp;
+        sp[0] = [uint256(0), 1, 1, 1, 2]; // VUSD -> crvUSD
+        sp[1] = [uint256(0), 1, 1, 1, 2]; // crvUSD -> sVUSD
+
+        address[5] memory pools;
+        pools[0] = POOL_VUSD_CRVUSD;
+        pools[1] = POOL_CRVUSD_SVUSD;
+
+        bytes memory data = abi.encodeWithSignature(
+            "exchange(address[11],uint256[5][5],uint256,uint256,address[5],address)",
+            route,
+            sp,
+            amount,
+            minOut,
+            pools,
+            receiver
+        );
+        return SVusdArbitrage.SwapParams({
+            target: CURVE_ROUTER,
+            approveTarget: CURVE_ROUTER,
+            swapCalldata: data,
+            minAmountOut: minOut
         });
     }
 
@@ -91,6 +133,31 @@ contract SVusdArbitrageForkTest is Test {
         emit log_named_uint("reserves (principal)", reserves);
         emit log_named_uint("profit pushed to beneficiary", pushed);
         emit log_named_int("profit (18dp)", profit);
+    }
+
+    // Production path: real router, calldata built as the bot builds it, open through settle.
+    function test_openThenSettle_viaCurveRouter() public {
+        uint256 amount = 5_000e18;
+        deal(VUSD, address(arb), amount);
+        arb.setAllowedSwapAddress(CURVE_ROUTER, true);
+
+        vm.prank(keeper);
+        (uint256 requestId, uint256 lockedVusd) = arb.openPosition(amount, _routerBuy(amount, 1, address(arb)), 0);
+
+        assertGt(lockedVusd, 0, "locked vusd > 0");
+        assertGe(lockedVusd, arb.entryVusdOf(requestId), "profit floor: locked >= spent");
+        assertEq(arb.openRequestCount(), 1, "one open position");
+        assertEq(IERC20(VUSD).balanceOf(address(arb)), 0, "vusd fully spent through the router");
+
+        IStakingVault.CooldownRequest memory details = IStakingVault(SVUSD).getRequestDetails(requestId);
+        vm.warp(details.claimableAt + 1);
+
+        vm.prank(keeper);
+        int256 profit = arb.settlePosition(requestId, 0);
+
+        assertGt(profit, 0, "profitable round trip via real router");
+        assertEq(IERC20(VUSD).balanceOf(address(arb)), amount, "principal recycled to reserves");
+        assertEq(uint256(profit), IERC20(VUSD).balanceOf(beneficiary), "profit pushed to beneficiary");
     }
 
     // The profit is fixed at open (both legs are VUSD, known in-tx), so an unmeetable keeper floor

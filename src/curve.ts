@@ -1,4 +1,4 @@
-import {ethers} from "ethers";
+import {type PublicClient, parseAbi} from "viem";
 import {POOL_CRVUSD_SVUSD, POOL_VUSD_CRVUSD} from "./constants.js";
 
 /**
@@ -8,42 +8,35 @@ import {POOL_CRVUSD_SVUSD, POOL_VUSD_CRVUSD} from "./constants.js";
  *
  * The arb entry is VUSD → crvUSD → sVUSD (both hops on Curve, VUSD-native).
  */
-const POOL_ABI = ["function get_dy(int128 i, int128 j, uint256 dx) view returns (uint256)"];
+const POOL_ABI = parseAbi([
+  "function get_dy(int128 i, int128 j, uint256 dx) view returns (uint256)",
+]);
 // Some Curve NG pools use uint256 indices; we try int128 first, then uint256.
-const POOL_ABI_UINT = ["function get_dy(uint256 i, uint256 j, uint256 dx) view returns (uint256)"];
+const POOL_ABI_UINT = parseAbi([
+  "function get_dy(uint256 i, uint256 j, uint256 dx) view returns (uint256)",
+]);
 
 export class CurveQuoter {
-  private svusdPoolI128: ethers.Contract;
-  private svusdPoolU256: ethers.Contract;
-  private entryPoolI128: ethers.Contract;
-  private entryPoolU256: ethers.Contract;
+  constructor(private client: PublicClient) {}
 
-  constructor(provider: ethers.Provider) {
-    this.svusdPoolI128 = new ethers.Contract(POOL_CRVUSD_SVUSD.address, POOL_ABI, provider);
-    this.svusdPoolU256 = new ethers.Contract(POOL_CRVUSD_SVUSD.address, POOL_ABI_UINT, provider);
-    this.entryPoolI128 = new ethers.Contract(POOL_VUSD_CRVUSD.address, POOL_ABI, provider);
-    this.entryPoolU256 = new ethers.Contract(POOL_VUSD_CRVUSD.address, POOL_ABI_UINT, provider);
-  }
-
-  private async getDy(
-    i128: ethers.Contract,
-    u256: ethers.Contract,
-    i: number,
-    j: number,
-    dx: bigint,
-  ): Promise<bigint> {
+  private async getDy(address: `0x${string}`, i: number, j: number, dx: bigint): Promise<bigint> {
+    const args = [BigInt(i), BigInt(j), dx] as const;
     try {
-      return await i128.get_dy(i, j, dx);
+      return await this.client.readContract({address, abi: POOL_ABI, functionName: "get_dy", args});
     } catch {
-      return await u256.get_dy(i, j, dx);
+      return await this.client.readContract({
+        address,
+        abi: POOL_ABI_UINT,
+        functionName: "get_dy",
+        args,
+      });
     }
   }
 
   /** VUSD (1e18) → crvUSD (1e18), through the VUSD/crvUSD pool. */
   async vusdToCrvusd(vusdIn: bigint): Promise<bigint> {
     return this.getDy(
-      this.entryPoolI128,
-      this.entryPoolU256,
+      POOL_VUSD_CRVUSD.address,
       POOL_VUSD_CRVUSD.vusdIndex,
       POOL_VUSD_CRVUSD.crvusdIndex,
       vusdIn,
@@ -53,8 +46,7 @@ export class CurveQuoter {
   /** crvUSD (1e18) → sVUSD (1e18), through the crvUSD/sVUSD pool. */
   async crvusdToSvusd(crvusdIn: bigint): Promise<bigint> {
     return this.getDy(
-      this.svusdPoolI128,
-      this.svusdPoolU256,
+      POOL_CRVUSD_SVUSD.address,
       POOL_CRVUSD_SVUSD.crvusdIndex,
       POOL_CRVUSD_SVUSD.svusdIndex,
       crvusdIn,
