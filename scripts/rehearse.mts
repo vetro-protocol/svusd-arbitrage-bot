@@ -97,6 +97,7 @@ function makeConfig(over: Partial<Config>): Config {
     maxGasPriceGwei: 1_000_000,
     probeAmounts: [FUND],
     pollIntervalMs: 0,
+    settleBatchCap: 20,
     port: 0,
     healthStaleMs: 0,
     ...over,

@@ -1,4 +1,4 @@
-import {formatEther, maxUint256, type PublicClient, parseAbi} from "viem";
+import {formatEther, type PublicClient, parseAbi} from "viem";
 import type {Arbitrage} from "./arbitrage.js";
 import type {Config} from "./config.js";
 import {VUSD_ADDRESS} from "./constants.js";
@@ -75,17 +75,18 @@ export class Jobs {
       this.vault.getClaimableRequests(this.arb.address),
     ]);
     if (claimableIds.length > 0) {
-      // Settle the whole matured set in one tx. The contract re-reads it and floors each payout to the
-      // amount locked at open, so there is no keeper-side floor to pass.
-      const batch = this.arb.settleClaimablePositions(maxUint256);
-      const label = `settle ${claimableIds.length} matured`;
+      // No keeper-side floor: the contract floors each payout to the amount locked at open.
+      const cap = this.config.settleBatchCap;
+      const toSettle = claimableIds.slice(0, cap);
+      const batch = this.arb.settleClaimablePositions(BigInt(cap));
+      const label = `settle ${toSettle.length} of ${claimableIds.length} matured`;
       const outcome = await this.executor.run({label, simulate: batch.simulate, send: batch.send});
 
       // The batch is all-or-nothing: if one matured id can't settle it reverts the lot. Fall back to
       // per-id so one bad position can't wedge the healthy ones (the executor skips the reverting id).
       if (outcome.status === "revert") {
         console.warn(`  batch settle reverted (${outcome.detail ?? ""}); retrying per-id`);
-        for (const id of claimableIds) {
+        for (const id of toSettle) {
           const one = this.arb.settlePosition(id);
           await this.executor.run({label: `settle #${id}`, simulate: one.simulate, send: one.send});
         }

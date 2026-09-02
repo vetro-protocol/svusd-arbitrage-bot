@@ -50,7 +50,6 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
                              IMMUTABLE STATE
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice sVUSD address
     IStakingVault public immutable svusd;
     /// @notice VUSD: the reserve currency and the payout token.
     IERC20 public immutable vusd;
@@ -183,12 +182,13 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     /// @param requestId_ Tracked open position to settle.
     /// @return profit Signed VUSD profit (vusdOut - entryVusd).
     function settlePosition(uint256 requestId_) external onlyKeeper nonReentrant returns (int256 profit) {
-        profit = _settle(requestId_);
+        Position memory position = _positions[requestId_];
+        if (position.entryVusd == 0) revert UnknownRequest(requestId_);
+        profit = _settle(position, requestId_);
         _pushProfit(profit);
     }
 
     /// @notice Settle the matured requests the vault reports as claimable for this contract.
-    /// @dev `_settle` validates each id against our own positions, so a stray vault id cannot be settled.
     /// @param maxCount_ Max positions to settle this call; pass type(uint256).max to settle all claimable.
     function settleClaimablePositions(uint256 maxCount_)
         external
@@ -200,7 +200,10 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
         uint256 n = ids.length;
         if (maxCount_ < n) n = maxCount_;
         for (uint256 i; i < n; ++i) {
-            totalProfit += _settle(ids[i]);
+            Position memory position = _positions[ids[i]];
+            // Skip ids we do not track so a foreign vault entry can't brick the batch (settlePosition reverts).
+            if (position.entryVusd == 0) continue;
+            totalProfit += _settle(position, ids[i]);
             ++settled;
         }
         _pushProfit(totalProfit);
@@ -224,8 +227,7 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
                                 CUSTODY
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Owner-only withdrawal of any token to any address (wind-down / stray-token rescue).
-    ///         Routine profit exit is automatic at `settlePosition`, so the keeper needs no withdrawal power.
+    /// @notice Owner-only withdrawal of any token to any address.
     function sweep(address token_, address to_, uint256 amount_) external onlyOwner nonReentrant {
         if (to_ == address(0)) revert AddressIsZero();
         IERC20(token_).safeTransfer(to_, amount_);
@@ -274,7 +276,7 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
                                  VIEWS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice All open request ids, read straight from the vault's registry of our active requests.
+    /// @notice All open request ids, read from the vault's registry of our active requests.
     function openRequestIds() external view returns (uint256[] memory) {
         return svusd.getActiveRequestIds(address(this));
     }
@@ -305,7 +307,6 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
                                 INTERNAL
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Addresses a swap must never touch: this contract, sVUSD (the vault), and VUSD.
     function _isProtectedAddress(address addr_) private view returns (bool) {
         return addr_ == address(this) || addr_ == address(svusd) || addr_ == address(vusd);
     }
@@ -324,11 +325,7 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
         if (profit > 0) vusd.safeTransfer(beneficiary, profit.toUint256());
     }
 
-    /// @dev Returns profit rather than pushing it, so a batch caller can aggregate one transfer.
-    function _settle(uint256 requestId_) internal returns (int256 profit) {
-        Position memory position = _positions[requestId_];
-        if (position.entryVusd == 0) revert UnknownRequest(requestId_);
-
+    function _settle(Position memory position, uint256 requestId_) internal returns (int256 profit) {
         delete _positions[requestId_]; // CEI: clear before the external call
 
         uint256 vusdBefore = vusd.balanceOf(address(this));

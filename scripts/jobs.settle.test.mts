@@ -6,7 +6,6 @@
 
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {maxUint256} from "viem";
 import type {Arbitrage} from "../src/arbitrage.js";
 import type {Config} from "../src/config.js";
 import type {Executor, ExecOutcome, TxPlan} from "../src/executor.js";
@@ -22,6 +21,7 @@ function harness(opts: {
   openIds: bigint[];
   claimableIds: bigint[];
   batchOutcome: ExecOutcome;
+  batchCap?: number;
 }) {
   const runLabels: string[] = [];
   const settledIds: bigint[] = [];
@@ -52,7 +52,8 @@ function harness(opts: {
     },
   } as unknown as Executor;
 
-  const jobs = new Jobs({} as Config, {} as never, vault, arb, executor, {} as Monitor);
+  const config = {settleBatchCap: opts.batchCap ?? 50} as Config;
+  const jobs = new Jobs(config, {} as never, vault, arb, executor, {} as Monitor);
   return {jobs, runLabels, settledIds, getBatchMaxCount: () => batchMaxCount};
 }
 
@@ -68,19 +69,32 @@ test("batch settle succeeds with no per-id fallback", async () => {
   const h = harness({openIds: [1n, 2n], claimableIds: [1n, 2n], batchOutcome: {status: "sent"}});
   const count = await h.jobs.settle();
   assert.equal(count, 2);
-  assert.equal(h.getBatchMaxCount(), maxUint256);
-  assert.deepEqual(h.runLabels, ["settle 2 matured"]);
+  assert.equal(h.getBatchMaxCount(), 50n); // passes the cap, not an unbounded sentinel
+  assert.deepEqual(h.runLabels, ["settle 2 of 2 matured"]);
   assert.deepEqual(h.settledIds, []);
 });
 
-test("batch revert falls back to settling each matured id", async () => {
+test("batch is capped: only the first `settleBatchCap` matured are settled this tick", async () => {
   const h = harness({
-    openIds: [1n, 2n, 3n],
-    claimableIds: [1n, 2n, 3n],
+    openIds: [1n, 2n, 3n, 4n, 5n],
+    claimableIds: [1n, 2n, 3n, 4n, 5n],
+    batchOutcome: {status: "sent"},
+    batchCap: 2,
+  });
+  await h.jobs.settle();
+  assert.equal(h.getBatchMaxCount(), 2n);
+  assert.deepEqual(h.runLabels, ["settle 2 of 5 matured"]);
+});
+
+test("batch revert falls back to settling each id, bounded by the cap", async () => {
+  const h = harness({
+    openIds: [1n, 2n, 3n, 4n, 5n],
+    claimableIds: [1n, 2n, 3n, 4n, 5n],
     batchOutcome: {status: "revert", detail: "one bad id"},
+    batchCap: 3,
   });
   const count = await h.jobs.settle();
-  assert.equal(count, 3);
-  assert.deepEqual(h.runLabels, ["settle 3 matured", "settle #1", "settle #2", "settle #3"]);
-  assert.deepEqual(h.settledIds, [1n, 2n, 3n]);
+  assert.equal(count, 5);
+  assert.deepEqual(h.runLabels, ["settle 3 of 5 matured", "settle #1", "settle #2", "settle #3"]);
+  assert.deepEqual(h.settledIds, [1n, 2n, 3n]); // the 2 beyond the cap wait for the next tick
 });

@@ -274,6 +274,15 @@ contract SVusdArbitrageForkTest is Test {
         assertEq(arb.openRequestCount(), 1, "owner cannot settle");
     }
 
+    // settlePosition is the strict, explicit path: naming an id we never opened reverts (the batch, by
+    // contrast, skips untracked ids). Pins the membership revert that now lives in settlePosition.
+    function test_settlePosition_revertsForUnknownId() public {
+        uint256 unknownId = 999_999;
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(SVusdArbitrage.UnknownRequest.selector, unknownId));
+        arb.settlePosition(unknownId);
+    }
+
     function test_cancelPosition_revertsForKeeper() public {
         uint256 amount = 2_000e18;
         deal(VUSD, address(arb), amount);
@@ -322,6 +331,38 @@ contract SVusdArbitrageForkTest is Test {
         assertEq(IERC20(VUSD).balanceOf(address(arb)), 2 * amount, "principal recycled to reserves");
         // Single transfer: the beneficiary balance equals the aggregate profit exactly.
         assertEq(uint256(totalProfit), IERC20(VUSD).balanceOf(beneficiary), "profit pushed once, in aggregate");
+    }
+
+    // All-or-nothing: if one matured id underpays (reverts the locked floor), the whole batch reverts
+    // and BOTH positions stay open. This is the property the TS per-id fallback rests on.
+    function test_settleClaimablePositions_oneUnderpayRevertsWholeBatch() public {
+        uint256 amount = 500e18;
+        deal(VUSD, address(arb), 2 * amount);
+
+        vm.startPrank(keeper);
+        (uint256 id1,) = arb.openPosition(amount, _buy(amount), 0);
+        arb.openPosition(amount, _buy(amount), 0);
+        vm.stopPrank();
+        assertEq(arb.openRequestCount(), 2, "two open positions");
+
+        IStakingVault.CooldownRequest memory details = IStakingVault(SVUSD).getRequestDetails(id1);
+        vm.warp(details.claimableAt + 1);
+
+        // One matured id underpays: claimWithdraw moves no VUSD, so vusdOut == 0 < lockedVusd and _settle
+        // reverts. The healthy id must roll back with it.
+        vm.mockCall(
+            SVUSD,
+            abi.encodeWithSelector(IStakingVault.claimWithdraw.selector, id1, address(arb)),
+            abi.encode(uint256(0))
+        );
+
+        vm.prank(keeper);
+        vm.expectRevert();
+        arb.settleClaimablePositions(type(uint256).max);
+
+        vm.clearMockedCalls();
+        assertEq(arb.openRequestCount(), 2, "both positions remain open after batch revert");
+        assertEq(IERC20(VUSD).balanceOf(beneficiary), 0, "no profit pushed");
     }
 
     // maxCount bounds the batch: with two matured, settleClaimablePositions(1) settles one and leaves one.
