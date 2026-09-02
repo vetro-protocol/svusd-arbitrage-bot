@@ -86,6 +86,10 @@ export class Executor {
     this.log(plan.label, `broadcast ${hash}, waiting…`);
     const receipt = await this.client.waitForTransactionReceipt({hash});
     this.log(plan.label, `mined in block ${receipt.blockNumber} (status ${receipt.status})`);
+    // Simulation passing does not guarantee inclusion succeeds: state can move under the tx.
+    if (receipt.status !== "success") {
+      return {status: "revert", detail: `reverted on-chain in block ${receipt.blockNumber}`, hash};
+    }
     return {status: "sent", hash};
   }
 }

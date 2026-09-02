@@ -97,6 +97,7 @@ function makeConfig(over: Partial<Config>): Config {
     maxGasPriceGwei: 1_000_000,
     probeAmounts: [FUND],
     pollIntervalMs: 0,
+    settleBatchCap: 20,
     port: 0,
     healthStaleMs: 0,
     ...over,
@@ -197,7 +198,7 @@ async function main() {
   const now = Number((await publicClient.getBlock()).timestamp);
   check("cooldown elapsed", now > claimableAt, `now=${now} claimableAt=${claimableAt}`);
 
-  await jobs.settle(now);
+  await jobs.settle();
 
   const reserves = await balanceOf(arbAddress);
   const profit = await balanceOf(BENEFICIARY);

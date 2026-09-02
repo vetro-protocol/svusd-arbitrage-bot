@@ -17,6 +17,9 @@ const VAULT_ABI = parseAbi([
   // cooldown disabled); we use it to detect whether the arb is atomic-eligible.
   "function maxRedeem(address owner) view returns (uint256)",
   "function getRequestDetails(uint256 requestId) view returns ((address owner, uint256 assets, uint256 claimableAt))",
+  // Vault-side maturity filter: the ids owned by `account` whose cooldown has elapsed. Lets the
+  // settle job skip a per-id claimableAt read per open position.
+  "function getClaimableRequests(address account) view returns (uint256[] requestIds, uint256[] assets)",
 ]);
 
 const ONE_SHARE = 10n ** 18n;
@@ -32,6 +35,17 @@ export class StakingVault {
       functionName: "previewRedeem",
       args: [shares],
     });
+  }
+
+  /** Request ids owned by `account` whose cooldown has elapsed, filtered by the vault itself. */
+  async getClaimableRequests(account: Address): Promise<readonly bigint[]> {
+    const [requestIds] = await this.client.readContract({
+      address: SVUSD_ADDRESS,
+      abi: VAULT_ABI,
+      functionName: "getClaimableRequests",
+      args: [account],
+    });
+    return requestIds;
   }
 
   /** Unix second at which `requestId` becomes claimable (0 if unknown). */

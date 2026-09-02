@@ -37,6 +37,9 @@ export interface Config {
   probeAmounts: bigint[];
   pollIntervalMs: number;
 
+  /** Max matured requests settled per tick, so the batch stays gas-bounded as positions pile up. */
+  settleBatchCap: number;
+
   /** Port the /status health server binds. Render injects PORT; defaults to 10000 locally. */
   port: number;
   /** Idle window before /status reports 503; must exceed the slowest tick (a live tx mining). */
@@ -93,6 +96,10 @@ const EnvSchema = z
     MAX_GAS_PRICE_GWEI: intEnv(40),
     PROBE_SIZES_VUSD: z.preprocess(emptyToUndefined, z.string().optional()),
     POLL_INTERVAL_MS: intEnv(15_000),
+    SETTLE_BATCH_CAP: z.preprocess(
+      emptyToUndefined,
+      z.coerce.number().int().positive().default(20),
+    ),
     PORT: intEnv(10000),
     HEALTH_STALE_MS: z.preprocess(emptyToUndefined, z.coerce.number().int().positive().optional()),
     TX_MODE: z.preprocess(emptyToUndefined, z.enum(["dry-run", "live"]).default("dry-run")),
@@ -136,6 +143,7 @@ export function loadConfig(): Config {
     maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI,
     probeAmounts: parseProbeAmounts(env.PROBE_SIZES_VUSD),
     pollIntervalMs: env.POLL_INTERVAL_MS,
+    settleBatchCap: env.SETTLE_BATCH_CAP,
     port: env.PORT,
     healthStaleMs: env.HEALTH_STALE_MS ?? Math.max(env.POLL_INTERVAL_MS * 5, 120_000),
   };

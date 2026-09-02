@@ -109,13 +109,11 @@ async function main() {
       // Jobs run every tick: open acts only on an affordable profitable opp; settle
       // sweeps matured requests regardless of whether any opportunity quoted.
       if (jobs) {
-        const block = await publicClient.getBlock();
-        const nowSec = Number(block.timestamp);
         // The contract can only open through the cooldown path; if the vault ever disables it,
         // opens would revert, so skip them and let settle keep clearing matured requests.
         if (state.cooldownEnabled) await jobs.open(opps, minProfitBps);
         else console.log(`  vault cooldown disabled; skipping opens`);
-        return await jobs.settle(nowSec);
+        return await jobs.settle();
       }
       return null;
     } catch (e) {

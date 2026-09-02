@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p scripts/tsconfig.json",
     "lint": "biome check src",
     "format": "biome check --write src",
+    "test": "tsx --test scripts/*.test.mts",
     "rehearse": "bash scripts/rehearse.sh"
   },
   "dependencies": {

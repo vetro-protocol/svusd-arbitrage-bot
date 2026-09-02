@@ -66,22 +66,32 @@ export class Jobs {
     });
   }
 
-  /** Settle every open request whose cooldown has matured; returns the open-position count. */
-  async settle(nowSec: number): Promise<number> {
-    const ids = await this.arb.openRequestIds();
-    for (const id of ids) {
-      const claimableAt = await this.vault.claimableAt(id);
-      if (claimableAt === 0) {
-        // A tracked-open id the vault reports as unknown: never happens for a normal open; surface it.
-        console.warn(`  settle: request #${id} has no claimableAt; skipping`);
-        continue;
-      }
-      if (nowSec < claimableAt) continue;
+  /** Settle every matured request in one tx; returns the total open-position count (for /status). */
+  async settle(): Promise<number> {
+    // The vault filters to matured ids for us; openRequestIds is only for the count. Both batch into one
+    // multicall round trip. We gate on the off-chain claimable read so an empty tick sends no tx.
+    const [openIds, claimableIds] = await Promise.all([
+      this.arb.openRequestIds(),
+      this.vault.getClaimableRequests(this.arb.address),
+    ]);
+    if (claimableIds.length > 0) {
+      // No keeper-side floor: the contract floors each payout to the amount locked at open.
+      const cap = this.config.settleBatchCap;
+      const toSettle = claimableIds.slice(0, cap);
+      const batch = this.arb.settleClaimablePositions(BigInt(cap));
+      const label = `settle ${toSettle.length} of ${claimableIds.length} matured`;
+      const outcome = await this.executor.run({label, simulate: batch.simulate, send: batch.send});
 
-      // minVusdOut left at 0: the contract holds the settle to at least the locked payout.
-      const plan = this.arb.settlePosition(id, 0n);
-      await this.executor.run({label: `settle #${id}`, simulate: plan.simulate, send: plan.send});
+      // The batch is all-or-nothing: if one matured id can't settle it reverts the lot. Fall back to
+      // per-id so one bad position can't wedge the healthy ones (the executor skips the reverting id).
+      if (outcome.status === "revert") {
+        console.warn(`  batch settle reverted (${outcome.detail ?? ""}); retrying per-id`);
+        for (const id of toSettle) {
+          const one = this.arb.settlePosition(id);
+          await this.executor.run({label: `settle #${id}`, simulate: one.simulate, send: one.send});
+        }
+      }
     }
-    return ids.length;
+    return openIds.length;
   }
 }
