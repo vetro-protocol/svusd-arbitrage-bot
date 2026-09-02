@@ -2,12 +2,14 @@ import "dotenv/config";
 import {type Address, createPublicClient, createWalletClient, formatEther, http} from "viem";
 import {privateKeyToAccount} from "viem/accounts";
 import {mainnet} from "viem/chains";
+import {type AggregatorAdapter, LiFiAdapter, OneInchAdapter} from "./aggregators.js";
 import {Arbitrage} from "./arbitrage.js";
 import {loadConfig} from "./config.js";
 import {CurveQuoter} from "./curve.js";
 import {Executor} from "./executor.js";
 import {Jobs} from "./jobs.js";
 import {Monitor} from "./monitor.js";
+import {EntryRouter} from "./router.js";
 import {Health, startHealthServer} from "./server.js";
 import {StakingVault} from "./stakingVault.js";
 import type {Opportunity} from "./types.js";
@@ -20,6 +22,8 @@ function banner(mode: string, cfg: ReturnType<typeof loadConfig>) {
   console.log(`  Mode:        ${mode}`);
   console.log(`  Floor:       ${cfg.minProfitBps} bps`);
   console.log(`  Buffer:      ${cfg.bufferBps} bps | slippage ${cfg.entrySlippageBps} bps`);
+  const venues = ["curve", ...buildAggregators(cfg).map((a) => a.name)];
+  console.log(`  Venues:      ${venues.join(", ")}`);
   console.log(`  Probe sizes: ${cfg.probeAmounts.map((a) => formatEther(a)).join(", ")} VUSD`);
   console.log("──────────────────────────────────────────────────────────────");
 }
@@ -41,6 +45,14 @@ function normalizeKey(key: string): `0x${string}` {
   return (key.startsWith("0x") ? key : `0x${key}`) as `0x${string}`;
 }
 
+/** Aggregator adapters to quote alongside native Curve; empty unless ENABLE_AGGREGATORS. */
+function buildAggregators(cfg: ReturnType<typeof loadConfig>): AggregatorAdapter[] {
+  if (!cfg.enableAggregators) return [];
+  const adapters: AggregatorAdapter[] = [new LiFiAdapter(cfg.lifiApiKey)];
+  if (cfg.oneinchApiKey) adapters.push(new OneInchAdapter(cfg.oneinchApiKey));
+  return adapters;
+}
+
 async function main() {
   const cfg = loadConfig();
   const publicClient = createPublicClient({
@@ -49,7 +61,9 @@ async function main() {
     batch: {multicall: true},
   });
   const vault = new StakingVault(publicClient);
-  const monitor = new Monitor(cfg, new CurveQuoter(publicClient), vault);
+  const aggregators = buildAggregators(cfg);
+  const router = new EntryRouter(new CurveQuoter(publicClient), aggregators, cfg.entrySlippageBps);
+  const monitor = new Monitor(cfg, router, vault);
 
   // A contract (read-only) whenever one is configured, so the bot reads the live on-chain
   // floor as the source of truth even in dry-run. Jobs need a signer on top of that.
@@ -111,8 +125,17 @@ async function main() {
       if (jobs) {
         // The contract can only open through the cooldown path; if the vault ever disables it,
         // opens would revert, so skip them and let settle keep clearing matured requests.
-        if (state.cooldownEnabled) await jobs.open(opps, minProfitBps);
-        else console.log(`  vault cooldown disabled; skipping opens`);
+        // Settle realizes funds, so an open-side throw (e.g. an aggregator build erroring) must
+        // never skip it: contain the open here so settle always runs.
+        if (state.cooldownEnabled) {
+          try {
+            await jobs.open(opps, minProfitBps);
+          } catch (e) {
+            console.warn(`  open failed: ${e instanceof Error ? e.message : e}`);
+          }
+        } else {
+          console.log(`  vault cooldown disabled; skipping opens`);
+        }
         return await jobs.settle();
       }
       return null;

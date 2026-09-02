@@ -53,3 +53,10 @@ services:
         value: "1000,5000,10000,25000"
       - key: POLL_INTERVAL_MS
         value: "15000"
+      - key: ENABLE_AGGREGATORS
+        value: "false"
+      # Aggregator API keys (only read when ENABLE_AGGREGATORS=true); LiFi works keyless.
+      - key: ONEINCH_API_KEY
+        sync: false
+      - key: LIFI_API_KEY
+        sync: false

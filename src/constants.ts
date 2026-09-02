@@ -13,6 +13,9 @@
 import type {Address} from "viem";
 import {zeroAddress} from "viem";
 
+/** Ethereum mainnet; the bot is mainnet-only, but the aggregator APIs are chain-scoped. */
+export const CHAIN_ID = 1;
+
 // ── Core tokens ──────────────────────────────────────────────────────────────
 /** Staked Vetro USD: an ERC4626 `StakingVault` over VUSD with a 7-day cooldown. */
 export const SVUSD_ADDRESS: Address = "0x476310E34D2810f7d79C43A74E4D79405bd7a925";
