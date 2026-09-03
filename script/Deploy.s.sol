@@ -2,7 +2,7 @@
 pragma solidity 0.8.30;
 
 import {Script} from "forge-std/Script.sol";
-import {console2} from "forge-std/console2.sol";
+import {console} from "forge-std/console.sol";
 
 import {SVusdArbitrage} from "../contracts/SVusdArbitrage.sol";
 
@@ -40,15 +40,15 @@ contract Deploy is Script {
         if (handoff) arb.transferOwnership(owner);
         vm.stopBroadcast();
 
-        console2.log("SVusdArbitrage :", address(arb));
-        console2.log("beneficiary    :", beneficiary);
-        console2.log("keeper         :", keeper);
-        console2.log("minProfitBps   :", minProfitBps);
+        console.log("SVusdArbitrage :", address(arb));
+        console.log("beneficiary    :", beneficiary);
+        console.log("keeper         :", keeper);
+        console.log("minProfitBps   :", minProfitBps);
         if (handoff) {
-            console2.log("pending owner  :", owner);
-            console2.log("(governance must call acceptOwnership to finish the handoff)");
+            console.log("pending owner  :", owner);
+            console.log("(governance must call acceptOwnership to finish the handoff)");
         } else {
-            console2.log("owner          :", deployer, "(deployer retains ownership)");
+            console.log("owner          :", deployer, "(deployer retains ownership)");
         }
     }
 }
