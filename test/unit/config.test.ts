@@ -129,3 +129,19 @@ describe("loadConfig PAUSED kill switch", () => {
     expect(loadWith({}).paused).toBe(false); // unset defaults to running
   });
 });
+
+describe("loadConfig integer bounds", () => {
+  it("rejects non-positive integer knobs (a 0 poll interval or bad gas cap)", () => {
+    expect(() => loadWith({MAX_GAS_PRICE_GWEI: "0"})).toThrow();
+    expect(() => loadWith({MAX_GAS_PRICE_GWEI: "-5"})).toThrow();
+    expect(() => loadWith({POLL_INTERVAL_MS: "0"})).toThrow();
+    expect(() => loadWith({PORT: "-1"})).toThrow();
+  });
+
+  it("accepts positive overrides", () => {
+    const c = loadWith({MAX_GAS_PRICE_GWEI: "80", POLL_INTERVAL_MS: "5000", PORT: "3000"});
+    expect(c.maxGasPriceGwei).toBe(80);
+    expect(c.pollIntervalMs).toBe(5_000);
+    expect(c.port).toBe(3_000);
+  });
+});
