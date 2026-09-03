@@ -6,9 +6,9 @@ import {console2} from "forge-std/console2.sol";
 
 import {SVusdArbitrage} from "../contracts/SVusdArbitrage.sol";
 
-/// @notice Deploy SVusdArbitrage, wire it (router allowlist + profit floor) as the temporary
-///         deployer-owner, then hand ownership to OWNER via Ownable2Step. OWNER must call
-///         acceptOwnership() to finish the handoff.
+/// @notice Deploy SVusdArbitrage, set the profit floor as the temporary deployer-owner, then hand
+///         ownership to OWNER via Ownable2Step. OWNER must call acceptOwnership() to finish the
+///         handoff.
 ///
 /// Env inputs:
 ///   BENEFICIARY     cold Safe that receives realized profit at settle
@@ -23,7 +23,6 @@ import {SVusdArbitrage} from "../contracts/SVusdArbitrage.sol";
 contract Deploy is Script {
     // Mainnet ground truth (mirrors src/constants.ts).
     address constant SVUSD = 0x476310E34D2810f7d79C43A74E4D79405bd7a925;
-    address constant CURVE_ROUTER = 0x16C6521Dff6baB339122a0FE25a9116693265353;
 
     function run() external returns (SVusdArbitrage arb) {
         address beneficiary = vm.envAddress("BENEFICIARY");
@@ -36,7 +35,6 @@ contract Deploy is Script {
 
         vm.startBroadcast();
         arb = new SVusdArbitrage(SVUSD, beneficiary, keeper, deployer);
-        arb.setAllowedSwapAddress(CURVE_ROUTER, true);
         arb.setMinProfitBps(minProfitBps);
         // Skip a self-transfer, which would leave a dangling pending owner.
         if (handoff) arb.transferOwnership(owner);

@@ -2,8 +2,8 @@ import type {Address, Hex} from "viem";
 
 /**
  * DEX aggregator adapters for the entry leg (VUSD -> sVUSD). Each adapter quotes a
- * price and builds swap calldata for an allowlisted aggregator router, so the bot can
- * source sVUSD from any venue the aggregator indexes, not just the native Curve pool.
+ * price and builds swap calldata for an aggregator router, so the bot can source
+ * sVUSD from any venue the aggregator indexes, not just the native Curve pool.
  *
  * The output shape (target, approveTarget, calldata) matches the contract's SwapParams;
  * the router sets the final minAmountOut from the bot's own fresh-quote floor.

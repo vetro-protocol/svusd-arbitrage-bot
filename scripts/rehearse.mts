@@ -1,8 +1,8 @@
 // End-to-end rehearsal of the live bot against an anvil mainnet fork.
 //
 // Exercises the real src/ modules (Monitor, CurveQuoter, StakingVault, Arbitrage, Executor, Jobs,
-// buildEntrySwap) the way production runs them: deploy the contract, allowlist the Curve router,
-// fund it with VUSD, then drive one full open -> 7-day cooldown -> settle round trip and assert the
+// buildEntrySwap) the way production runs them: deploy the contract, fund it with VUSD, then drive
+// one full open -> 7-day cooldown -> settle round trip and assert the
 // executor's PAUSED / spend-cap / gas-cap gates. This is the one path the Foundry suite cannot cover,
 // since those gates and the calldata builder live in TypeScript.
 //
@@ -35,7 +35,6 @@ import {EntryRouter} from "../src/router.js";
 import {StakingVault} from "../src/stakingVault.js";
 
 const RPC = process.env.ANVIL_RPC ?? "http://127.0.0.1:8546";
-const CURVE_ROUTER: Address = "0x16C6521Dff6baB339122a0FE25a9116693265353";
 
 // Deterministic anvil dev accounts. [0] deploys and owns, [1] is the keeper, [2] is the beneficiary.
 const OWNER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
@@ -120,35 +119,16 @@ async function deploy(): Promise<Address> {
   return receipt.contractAddress;
 }
 
-async function ownerCall(address: Address, abi: readonly string[], fn: string, args: unknown[]): Promise<void> {
-  const hash = await ownerWallet.writeContract({
-    address,
-    // biome-ignore lint/suspicious/noExplicitAny: parseAbi over a narrow admin signature
-    abi: parseAbi(abi) as any,
-    // biome-ignore lint/suspicious/noExplicitAny: admin fn name is dynamic here
-    functionName: fn as any,
-    args,
-    account: owner,
-    chain: mainnet,
-  });
-  await publicClient.waitForTransactionReceipt({hash});
-}
-
 async function main() {
   console.log(`sVUSD arb rehearsal on anvil fork (${RPC})`);
 
   section("deploy + configure");
   const arbAddress = await deploy();
-  await ownerCall(arbAddress, ["function setAllowedSwapAddress(address,bool)"], "setAllowedSwapAddress", [
-    CURVE_ROUTER,
-    true,
-  ]);
   console.log(`  contract ${arbAddress}, keeper ${keeper.address}`);
 
   const vault = new StakingVault(publicClient);
   const arb = new Arbitrage(arbAddress, publicClient, keeperWallet, keeper);
   check("keeper enrolled", await arb.isKeeper(keeper.address));
-  check("router allowlisted", await arb.allowedSwapAddress(CURVE_ROUTER));
 
   // A send that throws proves the gate short-circuited before broadcast.
   section("executor safety gates");
