@@ -31,6 +31,7 @@ import {CurveQuoter} from "../src/curve.js";
 import {Executor, type TxPlan} from "../src/executor.js";
 import {Jobs} from "../src/jobs.js";
 import {Monitor} from "../src/monitor.js";
+import {EntryRouter} from "../src/router.js";
 import {StakingVault} from "../src/stakingVault.js";
 
 const RPC = process.env.ANVIL_RPC ?? "http://127.0.0.1:8546";
@@ -100,6 +101,7 @@ function makeConfig(over: Partial<Config>): Config {
     settleBatchCap: 20,
     port: 0,
     healthStaleMs: 0,
+    enableAggregators: false,
     ...over,
   };
 }
@@ -177,7 +179,8 @@ async function main() {
   check("funded with VUSD", (await balanceOf(arbAddress)) === FUND);
 
   const cfg = makeConfig({arbitrageAddress: arbAddress});
-  const monitor = new Monitor(cfg, new CurveQuoter(publicClient), vault);
+  const router = new EntryRouter(new CurveQuoter(publicClient), [], cfg.entrySlippageBps);
+  const monitor = new Monitor(cfg, router, vault);
   const executor = new Executor(cfg, publicClient, keeper);
   const jobs = new Jobs(cfg, publicClient, vault, arb, executor, monitor);
 

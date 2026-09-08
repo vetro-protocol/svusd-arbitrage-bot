@@ -5,7 +5,6 @@ import {VUSD_ADDRESS} from "./constants.js";
 import type {Executor} from "./executor.js";
 import type {Monitor} from "./monitor.js";
 import type {StakingVault} from "./stakingVault.js";
-import {buildEntrySwap} from "./swapBuilder.js";
 import type {Opportunity} from "./types.js";
 
 /**
@@ -52,14 +51,11 @@ export class Jobs {
     // A break-even quote (no edge after the discount) is not worth a tx: bail rather than open at 0.
     if (minProfit <= 0n) return;
 
-    const buy = buildEntrySwap({
-      amountVusd: fresh.vusdAmount,
-      minSvusdOut: minShares,
-      receiver: this.arb.address,
-    });
+    // Build the swap from the venue that won this fresh quote (native Curve or an aggregator).
+    const buy = await fresh.plan.build(minShares, this.arb.address);
     const plan = this.arb.openPosition(fresh.vusdAmount, buy, minProfit);
     await this.executor.run({
-      label: `open ${formatEther(fresh.vusdAmount)}VUSD`,
+      label: `open ${formatEther(fresh.vusdAmount)}VUSD via ${fresh.plan.venue}`,
       spendVusd: fresh.vusdAmount,
       simulate: plan.simulate,
       send: plan.send,

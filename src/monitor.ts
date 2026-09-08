@@ -1,15 +1,20 @@
 import {type Address, formatEther} from "viem";
 import type {Config} from "./config.js";
-import type {CurveQuoter} from "./curve.js";
 import {quoteEntry} from "./quote.js";
+import type {EntryPlan, EntryRouter} from "./router.js";
 import type {StakingVault} from "./stakingVault.js";
 import type {Opportunity, VaultState} from "./types.js";
+
+/** An opportunity plus the winning venue's plan, so the open job can rebuild the exact swap. */
+export interface EvaluatedOpportunity extends Opportunity {
+  plan: EntryPlan;
+}
 
 /**
  * The economic core. For each probe size it simulates the VUSD-native round trip
  * through real on-chain quotes and reports the NET spread:
  *
- *   VUSD  --Curve--> crvUSD --Curve--> sVUSD          (entry, impact included)
+ *   VUSD  --best venue--> sVUSD                        (entry, impact included)
  *   sVUSD --requestRedeem--> VUSD locked at rate       (fixed for 7 days)
  *   VUSD  --claimWithdraw--> reserves                  (no exit swap, no Gateway)
  *
@@ -22,7 +27,7 @@ import type {Opportunity, VaultState} from "./types.js";
 export class Monitor {
   constructor(
     private config: Config,
-    private curve: CurveQuoter,
+    private router: EntryRouter,
     private vault: StakingVault,
   ) {}
 
@@ -30,14 +35,12 @@ export class Monitor {
     return this.vault.readState(this.config.arbitrageAddress as Address | undefined);
   }
 
-  /** Simulate one probe size. Returns null if any leg fails to quote. */
-  async evaluate(vusdAmount: bigint, minProfitBps: number): Promise<Opportunity | null> {
-    // Buy sVUSD (impact included), then the VUSD requestRedeem would lock for it (rate fixed at request).
-    const {shares: sharesOut, locked: vusdLocked} = await quoteEntry(
-      this.curve,
-      this.vault,
-      vusdAmount,
-    );
+  /** Simulate one probe size. Returns null if no venue quotes it. */
+  async evaluate(vusdAmount: bigint, minProfitBps: number): Promise<EvaluatedOpportunity | null> {
+    // Buy sVUSD on the best venue (impact included), then the VUSD requestRedeem would lock for it.
+    const quote = await quoteEntry(this.router, this.vault, vusdAmount);
+    if (!quote) return null;
+    const {shares: sharesOut, locked: vusdLocked, plan} = quote;
     if (sharesOut <= 0n || vusdLocked <= 0n) return null;
 
     // Money math in base units so the gate is bit-exact with the contract; only prices and
@@ -68,11 +71,12 @@ export class Monitor {
       netProfitAfterBufferVusd,
       contractFloorVusd,
       profitable: meetsContractFloor && netProfitAfterBufferVusd >= 0n,
+      plan,
     };
   }
 
   /** Evaluate every configured probe size against `minProfitBps`. Best (highest buffered net) first. */
-  async scan(minProfitBps: number): Promise<Opportunity[]> {
+  async scan(minProfitBps: number): Promise<EvaluatedOpportunity[]> {
     const results = await Promise.all(
       this.config.probeAmounts.map((a) =>
         this.evaluate(a, minProfitBps).catch((e) => {
@@ -84,7 +88,7 @@ export class Monitor {
       ),
     );
     return results
-      .filter((o): o is Opportunity => o !== null)
+      .filter((o): o is EvaluatedOpportunity => o !== null)
       .sort((a, b) => Number(b.netProfitAfterBufferVusd - a.netProfitAfterBufferVusd));
   }
 }

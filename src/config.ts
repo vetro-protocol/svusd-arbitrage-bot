@@ -40,6 +40,15 @@ export interface Config {
   /** Max matured requests settled per tick, so the batch stays gas-bounded as positions pile up. */
   settleBatchCap: number;
 
+  /**
+   * When true, quote DEX aggregators (in addition to native Curve) for the entry and take the
+   * best fill. Off by default: sVUSD trades only on Curve today, so aggregators mostly return
+   * no route; this is forward-readiness for when sVUSD lists on more venues.
+   */
+  enableAggregators: boolean;
+  oneinchApiKey?: string;
+  lifiApiKey?: string;
+
   /** Port the /status health server binds. Render injects PORT; defaults to 10000 locally. */
   port: number;
   /** Idle window before /status reports 503; must exceed the slowest tick (a live tx mining). */
@@ -109,6 +118,11 @@ const EnvSchema = z
     MAX_TX_SPEND_VUSD: moneyEnv("10000"),
     // Entry slippage tolerance, capped at 20% so a fat-finger can't silently gut sandwich protection.
     ENTRY_SLIPPAGE_BPS: bpsEnv(50, 2000),
+    ENABLE_AGGREGATORS: z
+      .preprocess(emptyToUndefined, z.string().default("false"))
+      .transform((v) => v.toLowerCase() === "true" || v === "1"),
+    ONEINCH_API_KEY: z.preprocess(emptyToUndefined, z.string().trim().optional()),
+    LIFI_API_KEY: z.preprocess(emptyToUndefined, z.string().trim().optional()),
   })
   .refine((env) => !env.PRIVATE_KEY || env.ARBITRAGE_ADDRESS, {
     message: "PRIVATE_KEY is set but ARBITRAGE_ADDRESS is missing",
@@ -146,5 +160,8 @@ export function loadConfig(): Config {
     settleBatchCap: env.SETTLE_BATCH_CAP,
     port: env.PORT,
     healthStaleMs: env.HEALTH_STALE_MS ?? Math.max(env.POLL_INTERVAL_MS * 5, 120_000),
+    enableAggregators: env.ENABLE_AGGREGATORS,
+    oneinchApiKey: env.ONEINCH_API_KEY,
+    lifiApiKey: env.LIFI_API_KEY,
   };
 }
