@@ -65,9 +65,10 @@ const PRIVATE_KEY_HEX = /^(0x)?[0-9a-fA-F]{64}$/;
 /** Treat an empty or whitespace-only env value as unset, so defaults apply. */
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 
-/** An integer env var with a default; empty and unset both fall back to `def`. */
+/** A positive-integer env var with a default; empty and unset fall back to `def`. Rejects <= 0 so a
+ *  fat-fingered poll interval can't tight-loop and a bad gas cap can't freeze or unbound broadcasting. */
 const intEnv = (def: number) =>
-  z.preprocess(emptyToUndefined, z.coerce.number().int().default(def));
+  z.preprocess(emptyToUndefined, z.coerce.number().int().positive().default(def));
 
 /** A bps env var, bounded to [0, max]; keeps slippage/floor knobs from being set to nonsense. */
 const bpsEnv = (def: number, max = 10_000) =>
