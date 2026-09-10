@@ -23,7 +23,6 @@ const ARBITRAGE_ABI = parseAbi([
   "function lockedVusdOf(uint256 requestId) view returns (uint256)",
   "function entryVusdOf(uint256 requestId) view returns (uint256)",
   "function isKeeper(address account) view returns (bool)",
-  "function allowedSwapAddress(address account) view returns (bool)",
   "function minProfitBps() view returns (uint256)",
 ]);
 
@@ -67,15 +66,6 @@ export class Arbitrage {
       address: this.address,
       abi: ARBITRAGE_ABI,
       functionName: "minProfitBps",
-    });
-  }
-
-  allowedSwapAddress(account: Address): Promise<boolean> {
-    return this.publicClient.readContract({
-      address: this.address,
-      abi: ARBITRAGE_ABI,
-      functionName: "allowedSwapAddress",
-      args: [account],
     });
   }
 

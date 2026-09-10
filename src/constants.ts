@@ -38,8 +38,8 @@ export const POOL_CRVUSD_SVUSD = {
   svusdIndex: 1,
 };
 
-// ── Curve router (chains both hops in one allowlisted call) ──────────────────
-/** CurveRouterNG (Router v1.2): the swap `target`/`approveTarget` the arb allowlists. */
+// ── Curve router (chains both hops in one call) ──────────────────────────────
+/** CurveRouterNG (Router v1.2): the swap `target`/`approveTarget` for the native-Curve entry. */
 export const CURVE_ROUTER: Address = "0x16C6521Dff6baB339122a0FE25a9116693265353";
 
 /**

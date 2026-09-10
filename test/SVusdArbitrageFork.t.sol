@@ -31,6 +31,95 @@ contract CurveTwoHop {
     }
 }
 
+/// @dev A rogue swap target: pulls VUSD from the caller and returns `giveSvusd` sVUSD (or none),
+///      standing in for a keeper trying to skim reserves through an arbitrary swap target.
+contract MaliciousRouter {
+    IERC20 constant VUSD = IERC20(0xCa83DDE9c22254f58e771bE5E157773212AcBAc3);
+    IERC20 constant SVUSD = IERC20(0x476310E34D2810f7d79C43A74E4D79405bd7a925);
+
+    function skim(uint256 pull, uint256 giveSvusd) external {
+        VUSD.transferFrom(msg.sender, address(this), pull);
+        if (giveSvusd > 0) SVUSD.transfer(msg.sender, giveSvusd);
+    }
+}
+
+/// @dev A swap target that re-enters `openPosition` mid-swap, to prove the `nonReentrant` guard fires.
+contract ReentrantRouter {
+    SVusdArbitrage internal immutable arb;
+
+    constructor(SVusdArbitrage arb_) {
+        arb = arb_;
+    }
+
+    function swap() external {
+        SVusdArbitrage.SwapParams memory inner = SVusdArbitrage.SwapParams({
+            target: address(this), approveTarget: address(this), swapCalldata: "", minAmountOut: 0
+        });
+        arb.openPosition(1, inner, 0); // re-enter while the outer call holds the guard
+    }
+}
+
+/// @dev The approved spender, distinct from the called target: the arb approves this contract, and the
+///      router (below) drives it to pull the VUSD. Exercises the `approveTarget != target` path.
+contract SplitSpender {
+    IERC20 constant VUSD = IERC20(0xCa83DDE9c22254f58e771bE5E157773212AcBAc3);
+
+    function pull(address from, uint256 amount) external {
+        VUSD.transferFrom(from, msg.sender, amount);
+    }
+}
+
+/// @dev The called target, distinct from the approved spender. The arb calls this; it tells the spender
+///      to pull the VUSD (using the spender's allowance) and then delivers sVUSD.
+contract SplitRouter {
+    IERC20 constant SVUSD = IERC20(0x476310E34D2810f7d79C43A74E4D79405bd7a925);
+    SplitSpender internal immutable spender;
+
+    constructor(SplitSpender spender_) {
+        spender = spender_;
+    }
+
+    function swap(uint256 vusdIn, uint256 giveSvusd) external {
+        spender.pull(msg.sender, vusdIn);
+        SVUSD.transfer(msg.sender, giveSvusd);
+    }
+}
+
+/// @dev Drives `openPosition` (the only path that grants a swap allowance) across its success and
+///      revert branches, so the invariant can assert no allowance ever survives a call. The router
+///      pulls less than the approved ceiling, so a missing reset would leave a residual the check trips.
+contract AllowanceInvariantHandler is Test {
+    SVusdArbitrage internal immutable arb;
+    MaliciousRouter internal immutable router;
+    address internal immutable keeper;
+    address internal immutable vusd;
+    address internal immutable svusd;
+
+    constructor(SVusdArbitrage arb_, MaliciousRouter router_, address keeper_, address vusd_, address svusd_) {
+        arb = arb_;
+        router = router_;
+        keeper = keeper_;
+        vusd = vusd_;
+        svusd = svusd_;
+    }
+
+    function open(uint256 ceiling, uint256 spend, uint256 shares) external {
+        ceiling = bound(ceiling, 2e18, 5_000e18);
+        spend = bound(spend, 1e18, ceiling);
+        shares = bound(shares, 0, 6_000e18);
+        deal(vusd, address(arb), ceiling);
+        deal(svusd, address(router), shares);
+        SVusdArbitrage.SwapParams memory buy = SVusdArbitrage.SwapParams({
+            target: address(router),
+            approveTarget: address(router),
+            swapCalldata: abi.encodeCall(MaliciousRouter.skim, (spend, shares)),
+            minAmountOut: 0
+        });
+        vm.prank(keeper);
+        try arb.openPosition(ceiling, buy, 0) {} catch {}
+    }
+}
+
 contract SVusdArbitrageForkTest is Test {
     address constant SVUSD = 0x476310E34D2810f7d79C43A74E4D79405bd7a925;
     address constant VUSD = 0xCa83DDE9c22254f58e771bE5E157773212AcBAc3;
@@ -41,6 +130,8 @@ contract SVusdArbitrageForkTest is Test {
 
     SVusdArbitrage internal arb;
     CurveTwoHop internal hop;
+    MaliciousRouter internal invariantRouter;
+    AllowanceInvariantHandler internal allowanceHandler;
 
     address internal owner = address(this);
     address internal keeper = makeAddr("keeper");
@@ -52,7 +143,10 @@ contract SVusdArbitrageForkTest is Test {
 
         arb = new SVusdArbitrage(SVUSD, beneficiary, keeper, owner);
         hop = new CurveTwoHop();
-        arb.setAllowedSwapAddress(address(hop), true);
+
+        invariantRouter = new MaliciousRouter();
+        allowanceHandler = new AllowanceInvariantHandler(arb, invariantRouter, keeper, VUSD, SVUSD);
+        targetContract(address(allowanceHandler));
     }
 
     function _buy(uint256 amount) internal view returns (SVusdArbitrage.SwapParams memory) {
@@ -95,10 +189,7 @@ contract SVusdArbitrageForkTest is Test {
             receiver
         );
         return SVusdArbitrage.SwapParams({
-            target: CURVE_ROUTER,
-            approveTarget: CURVE_ROUTER,
-            swapCalldata: data,
-            minAmountOut: minOut
+            target: CURVE_ROUTER, approveTarget: CURVE_ROUTER, swapCalldata: data, minAmountOut: minOut
         });
     }
 
@@ -139,7 +230,6 @@ contract SVusdArbitrageForkTest is Test {
     function test_openThenSettle_viaCurveRouter() public {
         uint256 amount = 5_000e18;
         deal(VUSD, address(arb), amount);
-        arb.setAllowedSwapAddress(CURVE_ROUTER, true);
 
         vm.prank(keeper);
         (uint256 requestId, uint256 lockedVusd) = arb.openPosition(amount, _routerBuy(amount, 1, address(arb)), 0);
@@ -421,9 +511,14 @@ contract SVusdArbitrageForkTest is Test {
         arb.settleClaimablePositions(0);
     }
 
-    // H-1 regression: the arbitrary swap call cannot reach an unvetted target, so a compromised
-    // keeper cannot redirect reserves. Pointing the swap at VUSD to transfer reserves out reverts.
-    function test_openPosition_revertsForUnvettedSwapAddress() public {
+    // ── Swap envelope: fund safety rests on the scoped-and-reset approval, the mandatory sVUSD
+    //    output, and the profit floor. These exercise it against a hostile swap target.
+
+    // A target that transfers reserves out yields no sVUSD, so NoSharesBought fires and the transfer
+    // rolls back.
+    // A keeper aiming the swap at VUSD itself to sweep reserves is rejected by the denylist before
+    // any approval or call, so the reserves never move.
+    function test_openPosition_maliciousVusdTransfer_reverts() public {
         deal(VUSD, address(arb), 1_000e18);
         SVusdArbitrage.SwapParams memory evil = SVusdArbitrage.SwapParams({
             target: VUSD,
@@ -432,16 +527,159 @@ contract SVusdArbitrageForkTest is Test {
             minAmountOut: 0
         });
         vm.prank(keeper);
-        vm.expectRevert(abi.encodeWithSelector(SVusdArbitrage.SwapAddressNotAllowed.selector, VUSD));
+        vm.expectRevert(abi.encodeWithSelector(SVusdArbitrage.ProtectedSwapTarget.selector, VUSD));
         arb.openPosition(1_000e18, evil, 0);
         assertEq(IERC20(VUSD).balanceOf(address(arb)), 1_000e18, "reserves untouched");
     }
 
-    function test_setAllowedSwapAddress_rejectsProtected() public {
-        vm.expectRevert(abi.encodeWithSelector(SVusdArbitrage.ProtectedSwapAddress.selector, VUSD));
-        arb.setAllowedSwapAddress(VUSD, true);
-        vm.expectRevert(abi.encodeWithSelector(SVusdArbitrage.ProtectedSwapAddress.selector, SVUSD));
-        arb.setAllowedSwapAddress(SVUSD, true);
+    // The denylist covers both the call target and the approve target, for the vault, the reserve
+    // token, and self: a swap can never be pointed at our own contracts.
+    function test_openPosition_rejectsProtectedSwapTargets() public {
+        deal(VUSD, address(arb), 1_000e18);
+        address[3] memory protectedAddrs = [SVUSD, VUSD, address(arb)];
+        for (uint256 i; i < protectedAddrs.length; ++i) {
+            address bad = protectedAddrs[i];
+            SVusdArbitrage.SwapParams memory badTarget = SVusdArbitrage.SwapParams({
+                target: bad, approveTarget: address(hop), swapCalldata: "", minAmountOut: 0
+            });
+            vm.prank(keeper);
+            vm.expectRevert(abi.encodeWithSelector(SVusdArbitrage.ProtectedSwapTarget.selector, bad));
+            arb.openPosition(1_000e18, badTarget, 0);
+
+            SVusdArbitrage.SwapParams memory badApprove = SVusdArbitrage.SwapParams({
+                target: address(hop), approveTarget: bad, swapCalldata: "", minAmountOut: 0
+            });
+            vm.prank(keeper);
+            vm.expectRevert(abi.encodeWithSelector(SVusdArbitrage.ProtectedSwapTarget.selector, bad));
+            arb.openPosition(1_000e18, badApprove, 0);
+        }
+    }
+
+    // A rogue router that takes the VUSD but delivers no sVUSD → NoSharesBought, reserves rolled back.
+    function test_openPosition_rogueRouterNoShares_reverts() public {
+        MaliciousRouter evil = new MaliciousRouter();
+        deal(VUSD, address(arb), 1_000e18);
+        SVusdArbitrage.SwapParams memory buy = SVusdArbitrage.SwapParams({
+            target: address(evil),
+            approveTarget: address(evil),
+            swapCalldata: abi.encodeCall(MaliciousRouter.skim, (1_000e18, 0)),
+            minAmountOut: 0
+        });
+        vm.prank(keeper);
+        vm.expectRevert(SVusdArbitrage.NoSharesBought.selector);
+        arb.openPosition(1_000e18, buy, 0);
+        assertEq(IERC20(VUSD).balanceOf(address(arb)), 1_000e18, "reserves untouched");
+    }
+
+    // A rogue router that under-delivers sVUSD (10 sVUSD for 1000 VUSD) → InsufficientProfit, rolled back.
+    function test_openPosition_rogueRouterUnderpays_reverts() public {
+        MaliciousRouter evil = new MaliciousRouter();
+        deal(VUSD, address(arb), 1_000e18);
+        deal(SVUSD, address(evil), 10e18); // the pittance it hands back
+        SVusdArbitrage.SwapParams memory buy = SVusdArbitrage.SwapParams({
+            target: address(evil),
+            approveTarget: address(evil),
+            swapCalldata: abi.encodeCall(MaliciousRouter.skim, (1_000e18, 10e18)),
+            minAmountOut: 1
+        });
+        vm.prank(keeper);
+        vm.expectRevert(); // InsufficientProfit: 10 sVUSD redeems well under the 1000 VUSD floor
+        arb.openPosition(1_000e18, buy, 0);
+        assertEq(IERC20(VUSD).balanceOf(address(arb)), 1_000e18, "reserves untouched");
+    }
+
+    // A router that tries to pull MORE than approved is stopped by the scoped allowance, not a limit.
+    function test_openPosition_rogueRouterOverPull_reverts() public {
+        MaliciousRouter evil = new MaliciousRouter();
+        deal(VUSD, address(arb), 1_000e18);
+        SVusdArbitrage.SwapParams memory buy = SVusdArbitrage.SwapParams({
+            target: address(evil),
+            approveTarget: address(evil),
+            swapCalldata: abi.encodeCall(MaliciousRouter.skim, (1_000e18, 0)), // pull 1000...
+            minAmountOut: 0
+        });
+        vm.prank(keeper);
+        vm.expectRevert(); // ...but only 500 approved → transferFrom reverts on allowance
+        arb.openPosition(500e18, buy, 0);
+        assertEq(IERC20(VUSD).balanceOf(address(arb)), 1_000e18, "reserves untouched");
+    }
+
+    // A swap can't move a token the contract merely holds and never approved: with no VUSD leg,
+    // ZeroAmount reverts and the transfer rolls back. (Only VUSD/sVUSD deltas are measured; safety
+    // here is the absence of any other approval, not the delta gate.)
+    function test_openPosition_cannotDrainStrayToken() public {
+        deal(VUSD, address(arb), 1_000e18);
+        deal(CRVUSD, address(arb), 1_000e18);
+        SVusdArbitrage.SwapParams memory evil = SVusdArbitrage.SwapParams({
+            target: CRVUSD,
+            approveTarget: CRVUSD,
+            swapCalldata: abi.encodeWithSignature("transfer(address,uint256)", stranger, uint256(1_000e18)),
+            minAmountOut: 0
+        });
+        vm.prank(keeper);
+        vm.expectRevert(SVusdArbitrage.ZeroAmount.selector);
+        arb.openPosition(1_000e18, evil, 0);
+        assertEq(IERC20(CRVUSD).balanceOf(address(arb)), 1_000e18, "stray token untouched");
+    }
+
+    // Future-feature guard: after a swap the contract must hold no standing VUSD allowance to the
+    // target. A new code path that forgot to reset an approval would trip this.
+    function test_openPosition_leavesNoStandingAllowance() public {
+        uint256 amount = 2_000e18;
+        deal(VUSD, address(arb), amount);
+        vm.prank(keeper);
+        arb.openPosition(amount, _buy(amount), 0);
+        assertEq(IERC20(VUSD).allowance(address(arb), address(hop)), 0, "swap allowance reset to 0");
+    }
+
+    // A swap target that re-enters openPosition mid-call is stopped by nonReentrant. The router is a
+    // keeper so the re-entry clears onlyKeeper and actually reaches the guard (worst-case caller).
+    function test_openPosition_reentrancyReverts() public {
+        ReentrantRouter evil = new ReentrantRouter(arb);
+        arb.addKeeper(address(evil));
+        deal(VUSD, address(arb), 1_000e18);
+        SVusdArbitrage.SwapParams memory buy = SVusdArbitrage.SwapParams({
+            target: address(evil),
+            approveTarget: address(evil),
+            swapCalldata: abi.encodeCall(ReentrantRouter.swap, ()),
+            minAmountOut: 0
+        });
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSignature("ReentrancyGuardReentrantCall()"));
+        arb.openPosition(1_000e18, buy, 0);
+    }
+
+    // approveTarget != target: the arb approves the spender but calls the router; the buy still works
+    // and leaves no allowance to the spender (the reset targets approveTarget, not target).
+    function test_openPosition_distinctApproveTarget() public {
+        SplitSpender spender = new SplitSpender();
+        SplitRouter router = new SplitRouter(spender);
+        uint256 amount = 2_000e18;
+        deal(VUSD, address(arb), amount);
+        deal(SVUSD, address(router), amount); // sVUSD to deliver; pps >= 1 clears the profit floor
+
+        SVusdArbitrage.SwapParams memory buy = SVusdArbitrage.SwapParams({
+            target: address(router),
+            approveTarget: address(spender),
+            swapCalldata: abi.encodeCall(SplitRouter.swap, (amount, amount)),
+            minAmountOut: 1
+        });
+        vm.prank(keeper);
+        (uint256 requestId, uint256 lockedVusd) = arb.openPosition(amount, buy, 0);
+
+        assertGt(lockedVusd, 0, "opened via split approve/target");
+        assertEq(arb.entryVusdOf(requestId), amount, "spent measured on the VUSD delta");
+        assertEq(IERC20(VUSD).allowance(address(arb), address(spender)), 0, "spender allowance reset");
+        assertEq(IERC20(VUSD).allowance(address(arb), address(router)), 0, "router never approved");
+    }
+
+    // No sequence of opens leaves a standing swap allowance; the reset is the only thing zeroing the
+    // residual the handler's router leaves by pulling less than the approved ceiling.
+    /// forge-config: default.invariant.runs = 8
+    /// forge-config: default.invariant.depth = 8
+    function invariant_noStandingSwapAllowance() public view {
+        assertEq(IERC20(VUSD).allowance(address(arb), address(invariantRouter)), 0, "no standing swap allowance");
+        assertEq(IERC20(VUSD).allowance(address(arb), address(arb)), 0, "no self allowance");
     }
 
     function test_openPosition_revertsForNonKeeper() public {

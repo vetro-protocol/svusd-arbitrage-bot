@@ -25,8 +25,10 @@ moment you buy, and the contract enforces it at entry. The only sVUSD pool is th
 
 The `SVusdArbitrage` contract holds the VUSD reserves and open positions. The
 keeper key only triggers guarded actions and can never move funds out; withdrawals
-are owner-only. Swaps are passed in as pre-built calldata, confined to an
-owner-curated allowlist.
+are owner-only. Swaps are passed in as pre-built calldata to any external venue
+(never the vault, reserve token, or the contract itself): the approval is scoped to
+the swap input and reset to 0, the buy must deliver sVUSD past a floor, and the
+payout must clear the profit floor, so a compromised keeper cannot net funds out.
 
 ## Quick start (dry-run monitor)
 

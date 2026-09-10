@@ -2,13 +2,13 @@
 pragma solidity 0.8.30;
 
 import {Script} from "forge-std/Script.sol";
-import {console2} from "forge-std/console2.sol";
+import {console} from "forge-std/console.sol";
 
 import {SVusdArbitrage} from "../contracts/SVusdArbitrage.sol";
 
-/// @notice Deploy SVusdArbitrage, wire it (router allowlist + profit floor) as the temporary
-///         deployer-owner, then hand ownership to OWNER via Ownable2Step. OWNER must call
-///         acceptOwnership() to finish the handoff.
+/// @notice Deploy SVusdArbitrage, set the profit floor as the temporary deployer-owner, then hand
+///         ownership to OWNER via Ownable2Step. OWNER must call acceptOwnership() to finish the
+///         handoff.
 ///
 /// Env inputs:
 ///   BENEFICIARY     cold Safe that receives realized profit at settle
@@ -23,7 +23,6 @@ import {SVusdArbitrage} from "../contracts/SVusdArbitrage.sol";
 contract Deploy is Script {
     // Mainnet ground truth (mirrors src/constants.ts).
     address constant SVUSD = 0x476310E34D2810f7d79C43A74E4D79405bd7a925;
-    address constant CURVE_ROUTER = 0x16C6521Dff6baB339122a0FE25a9116693265353;
 
     function run() external returns (SVusdArbitrage arb) {
         address beneficiary = vm.envAddress("BENEFICIARY");
@@ -36,21 +35,20 @@ contract Deploy is Script {
 
         vm.startBroadcast();
         arb = new SVusdArbitrage(SVUSD, beneficiary, keeper, deployer);
-        arb.setAllowedSwapAddress(CURVE_ROUTER, true);
         arb.setMinProfitBps(minProfitBps);
         // Skip a self-transfer, which would leave a dangling pending owner.
         if (handoff) arb.transferOwnership(owner);
         vm.stopBroadcast();
 
-        console2.log("SVusdArbitrage :", address(arb));
-        console2.log("beneficiary    :", beneficiary);
-        console2.log("keeper         :", keeper);
-        console2.log("minProfitBps   :", minProfitBps);
+        console.log("SVusdArbitrage :", address(arb));
+        console.log("beneficiary    :", beneficiary);
+        console.log("keeper         :", keeper);
+        console.log("minProfitBps   :", minProfitBps);
         if (handoff) {
-            console2.log("pending owner  :", owner);
-            console2.log("(governance must call acceptOwnership to finish the handoff)");
+            console.log("pending owner  :", owner);
+            console.log("(governance must call acceptOwnership to finish the handoff)");
         } else {
-            console2.log("owner          :", deployer, "(deployer retains ownership)");
+            console.log("owner          :", deployer, "(deployer retains ownership)");
         }
     }
 }

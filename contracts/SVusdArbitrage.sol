@@ -16,8 +16,11 @@ import {IStakingVault} from "./interfaces/IStakingVault.sol";
 ///         on a DEX with VUSD, redeem through the StakingVault's 7-day cooldown, and get VUSD back.
 ///         Profit is fixed and enforced at `openPosition`; at `settlePosition` the principal recycles
 ///         as reserves and realized profit is pushed to the beneficiary.
-/// @dev Keeper-gated. Swaps are caller-supplied calldata confined to an owner allowlist, so a
-///      compromised keeper cannot exfiltrate and can never move funds out. VUSD in, VUSD out.
+/// @dev Keeper-gated. Swaps are caller-supplied calldata to an external venue (never our own vault,
+///      reserve token, or self), safe by construction: the approval is scoped to the swap input and
+///      reset to 0, the buy must deliver sVUSD past `minAmountOut`, and the payout must clear the
+///      profit floor. So a compromised keeper can spend at most the approved input and can never net
+///      funds out. VUSD in, VUSD out.
 contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using SafeCast for uint256;
@@ -60,9 +63,6 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice Receives realized profit. Owner-set cold Safe.
     address public beneficiary;
-    /// @notice DEX contracts the keeper may use as a swap `target` or `approveTarget`. Owner-curated;
-    ///         a protected address (VUSD, sVUSD, or this contract) can never be added.
-    mapping(address => bool) public allowedSwapAddress;
     /// @notice Minimum profit on `openPosition`, in bps of VUSD spent. 0 = off.
     uint256 public minProfitBps;
 
@@ -79,7 +79,6 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     event KeeperAdded(address indexed keeper);
     event KeeperRemoved(address indexed keeper);
     event BeneficiaryUpdated(address indexed previousBeneficiary, address indexed newBeneficiary);
-    event AllowedSwapAddressUpdated(address indexed account, bool allowed);
     event MinProfitBpsUpdated(uint256 previousBps, uint256 newBps);
     event PositionOpened(uint256 indexed requestId, uint256 entryVusd, uint256 shares, uint256 lockedVusd);
     event PositionSettled(uint256 indexed requestId, uint256 entryVusd, uint256 vusdOut, int256 profit);
@@ -93,10 +92,9 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
     error NotKeeper();
     error AddressIsZero();
     error ZeroAmount();
-    error SwapAddressNotAllowed(address account);
-    error ProtectedSwapAddress(address account);
     error InsufficientOutput(uint256 actual, uint256 minRequired);
     error NoSharesBought();
+    error ProtectedSwapTarget(address target);
     error InsufficientProfit(uint256 lockedVusd, uint256 minRequired);
     error InvalidBps(uint256 bps);
     error UnknownRequest(uint256 requestId);
@@ -147,8 +145,8 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
         returns (uint256 requestId, uint256 lockedVusd)
     {
         if (vusdAmount_ == 0) revert ZeroAmount();
-        if (!allowedSwapAddress[buy_.target]) revert SwapAddressNotAllowed(buy_.target);
-        if (!allowedSwapAddress[buy_.approveTarget]) revert SwapAddressNotAllowed(buy_.approveTarget);
+        _requireUnprotected(buy_.target);
+        _requireUnprotected(buy_.approveTarget);
 
         uint256 vusdBefore = vusd.balanceOf(address(this));
         uint256 svusdBefore = svusd.balanceOf(address(this));
@@ -256,15 +254,6 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
         beneficiary = beneficiary_;
     }
 
-    /// @notice Allow or disallow a DEX contract as a swap `target` or `approveTarget`. Protected
-    ///         addresses are rejected.
-    function setAllowedSwapAddress(address account_, bool allowed_) external onlyOwner {
-        if (account_ == address(0)) revert AddressIsZero();
-        if (allowed_ && _isProtectedAddress(account_)) revert ProtectedSwapAddress(account_);
-        allowedSwapAddress[account_] = allowed_;
-        emit AllowedSwapAddressUpdated(account_, allowed_);
-    }
-
     /// @notice Set the on-chain minimum profit for `openPosition`, in bps of VUSD spent. 0 disables it.
     function setMinProfitBps(uint256 minProfitBps_) external onlyOwner {
         if (minProfitBps_ > MAX_BPS) revert InvalidBps(minProfitBps_);
@@ -307,8 +296,12 @@ contract SVusdArbitrage is Ownable2Step, ReentrancyGuardTransient {
                                 INTERNAL
     //////////////////////////////////////////////////////////////*/
 
-    function _isProtectedAddress(address addr_) private view returns (bool) {
-        return addr_ == address(this) || addr_ == address(svusd) || addr_ == address(vusd);
+    /// @dev A swap address that aliases our own vault, reserve token, or self would let the call
+    ///      drive our position or reserves instead of an external venue; keep swaps to third parties.
+    function _requireUnprotected(address account_) internal view {
+        if (account_ == address(svusd) || account_ == address(vusd) || account_ == address(this)) {
+            revert ProtectedSwapTarget(account_);
+        }
     }
 
     /// @dev Execute a pre-built DEX swap, bubbling up the raw revert on failure.
