@@ -10,6 +10,12 @@ import {SVusdArbitrage} from "../contracts/SVusdArbitrage.sol";
 ///         ownership to OWNER via Ownable2Step. OWNER must call acceptOwnership() to finish the
 ///         handoff.
 ///
+/// Post-deploy the contract holds zero reserves: fund it by transferring VUSD directly to the
+/// deployed address (it custodies reserves; there is no deposit function). With MIN_PROFIT_BPS at
+/// the default 30 (0.30%) the bot will not open until the spread clears that floor, so a quiet
+/// keeper is expected, not stuck. Leave MIN_PROFIT_BPS > 0 in production: at 0 the profit guarantee
+/// rests entirely on the keeper's per-call floor.
+///
 /// Env inputs:
 ///   BENEFICIARY     cold Safe that receives realized profit at settle
 ///   KEEPER          hot bot EOA (the keeper signer)
@@ -24,11 +30,17 @@ contract Deploy is Script {
     // Mainnet ground truth (mirrors src/constants.ts).
     address constant SVUSD = 0x476310E34D2810f7d79C43A74E4D79405bd7a925;
 
+    error OwnerIsZero();
+
     function run() external returns (SVusdArbitrage arb) {
         address beneficiary = vm.envAddress("BENEFICIARY");
         address keeper = vm.envAddress("KEEPER");
         address owner = vm.envAddress("OWNER");
         uint256 minProfitBps = vm.envOr("MIN_PROFIT_BPS", uint256(30));
+
+        // A zero OWNER would make transferOwnership a no-op (Ownable2Step reads it as "clear pending"),
+        // silently leaving the deployer as permanent owner. Fail loudly instead.
+        if (owner == address(0)) revert OwnerIsZero();
 
         address deployer = msg.sender;
         bool handoff = owner != deployer;
