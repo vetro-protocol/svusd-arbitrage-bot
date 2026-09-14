@@ -101,7 +101,7 @@ export class Arbitrage {
     };
   }
 
-  /** Simulate/send pair for `settleClaimablePositions(maxCount)`; pass maxUint256 to settle every matured position. */
+  /** Simulate/send pair for `settleClaimablePositions(maxCount)`; the job passes the batch cap so a large matured set drains over successive ticks. */
   settleClaimablePositions(maxCount: bigint) {
     const args = [maxCount] as const;
     return {
