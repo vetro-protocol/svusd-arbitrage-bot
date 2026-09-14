@@ -88,3 +88,9 @@ export const VUSD_DECIMALS = 18;
 
 /** Fixed 7-day cooldown at time of writing; the bot re-reads it live each poll. */
 export const COOLDOWN_DURATION_FALLBACK_S = 604800;
+
+// ── Deployment (Ethereum mainnet) ─────────────────────────────────────────────
+/** The deployed SVusdArbitrage custody contract. Runtime `ARBITRAGE_ADDRESS` overrides it (e.g. a redeploy). */
+export const ARBITRAGE_ADDRESS: Address = "0x2B66E41fE0Be93c7f68B8fB2F2d9274f2Bc73aE6";
+/** The keeper EOA the bot signs as. On-chain `getKeepers()` is authoritative; update here if rotated. */
+export const KEEPER_ADDRESS: Address = "0x30719E2c487e1367cF99d200F376CeE21839b5dB";

@@ -1,5 +1,6 @@
-import {parseEther} from "viem";
+import {parseEther, zeroAddress} from "viem";
 import {z} from "zod";
+import {ARBITRAGE_ADDRESS as DEFAULT_ARBITRAGE_ADDRESS} from "./constants.js";
 
 export interface Config {
   rpcUrl: string;
@@ -11,6 +12,7 @@ export interface Config {
   /** Kill switch: when true the executor simulates but refuses to broadcast. */
   paused: boolean;
   privateKey?: string;
+  /** Deployed contract the bot drives: env override, else the constants default; unset only pre-deploy. */
   arbitrageAddress?: string;
   /** Hard ceiling on VUSD spent per open (base units), enforced before any send. */
   maxTxSpendVusd: bigint;
@@ -18,9 +20,8 @@ export interface Config {
   entrySlippageBps: number;
 
   /**
-   * Fallback profit floor (bps of VUSD spent) used ONLY when no ARBITRAGE_ADDRESS is wired.
-   * With a contract configured the bot reads its live `minProfitBps` each tick instead, so
-   * the gate never drifts from the deployed floor.
+   * Fallback profit floor (bps of VUSD spent) for the rare case the on-chain floor can't be read.
+   * The bot reads the deployed `minProfitBps` live each tick, so the gate tracks the on-chain floor.
    */
   minProfitBps: number;
   /** Off-chain gas-cost assumption for a full open+claim round trip (VUSD, base units). */
@@ -92,6 +93,14 @@ function parseProbeAmounts(raw: string | undefined): bigint[] {
   return list.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
+/** The contract the bot drives: env override, else the committed constants default. Empty or the zero
+ *  address (a fresh, not-yet-deployed repo) resolves to unset, so dry-run runs monitor-only and live mode
+ *  is rejected below rather than pointing the bot at a dead address. */
+function resolveArbitrageAddress(override: string | undefined): string | undefined {
+  const addr = override ?? DEFAULT_ARBITRAGE_ADDRESS;
+  return addr && addr !== zeroAddress ? addr : undefined;
+}
+
 const EnvSchema = z
   .object({
     ETHEREUM_RPC_URL: z.string().min(1, "required"),
@@ -125,14 +134,16 @@ const EnvSchema = z
     ONEINCH_API_KEY: z.preprocess(emptyToUndefined, z.string().trim().optional()),
     LIFI_API_KEY: z.preprocess(emptyToUndefined, z.string().trim().optional()),
   })
-  .refine((env) => !env.PRIVATE_KEY || env.ARBITRAGE_ADDRESS, {
-    message: "PRIVATE_KEY is set but ARBITRAGE_ADDRESS is missing",
-    path: ["ARBITRAGE_ADDRESS"],
-  })
-  .refine((env) => env.TX_MODE !== "live" || (env.PRIVATE_KEY && env.ARBITRAGE_ADDRESS), {
-    message: "TX_MODE=live requires both PRIVATE_KEY and ARBITRAGE_ADDRESS",
-    path: ["TX_MODE"],
-  });
+  .refine(
+    (env) =>
+      env.TX_MODE !== "live" ||
+      (Boolean(env.PRIVATE_KEY) && Boolean(resolveArbitrageAddress(env.ARBITRAGE_ADDRESS))),
+    {
+      message:
+        "TX_MODE=live requires PRIVATE_KEY and a contract address (set ARBITRAGE_ADDRESS or update src/constants.ts after deploying)",
+      path: ["TX_MODE"],
+    },
+  );
 
 export function loadConfig(): Config {
   const parsed = EnvSchema.safeParse(process.env);
@@ -149,7 +160,7 @@ export function loadConfig(): Config {
     txMode: env.TX_MODE,
     paused: env.PAUSED,
     privateKey: env.PRIVATE_KEY,
-    arbitrageAddress: env.ARBITRAGE_ADDRESS,
+    arbitrageAddress: resolveArbitrageAddress(env.ARBITRAGE_ADDRESS),
     maxTxSpendVusd: parseEther(env.MAX_TX_SPEND_VUSD),
     entrySlippageBps: env.ENTRY_SLIPPAGE_BPS,
     minProfitBps: env.MIN_PROFIT_BPS,

@@ -55,8 +55,9 @@ that runs the poll loop and serves `GET /status` for the health check.
   open positions, last error) while the loop is live, and `503` if a tick hangs, so
   Render restarts a stalled keeper. The body carries no key or RPC URL, so it is
   safe on the public URL.
-- **Secrets** (`ETHEREUM_RPC_URL`, `PRIVATE_KEY`, `ARBITRAGE_ADDRESS`) are
-  `sync:false`: set them in the Render dashboard, never in git.
+- **Secrets** (`ETHEREUM_RPC_URL`, `PRIVATE_KEY`) are `sync:false`: set them in the Render
+  dashboard, never in git. `ARBITRAGE_ADDRESS` defaults from `src/constants.ts`; set it (also
+  `sync:false`) only to override that default, e.g. a redeploy.
 - **Operational toggles** (`TX_MODE`, `PAUSED`) are also `sync:false`, so they are
   dashboard-owned and a deploy never reverts a hand-flip. Both default safe when
   unset (dry-run, unpaused); set `TX_MODE=live` once you have watched a dry-run tick.
