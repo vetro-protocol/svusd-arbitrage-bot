@@ -1,9 +1,11 @@
 // loadConfig: zod parsing/validation. Money keeps full 18-dp precision via parseEther, bps knobs
-// are bounded, probe sizes are cleaned+sorted, and live mode requires a key + address.
+// are bounded, probe sizes are cleaned+sorted, and live mode requires a key (the address defaults
+// from constants).
 
-import {parseEther} from "viem";
+import {parseEther, zeroAddress} from "viem";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {loadConfig} from "../../src/config.js";
+import {ARBITRAGE_ADDRESS} from "../../src/constants.js";
 
 // Every knob loadConfig reads; neutralized to "" so ambient shell env can't skew a defaults test.
 const KNOBS = [
@@ -99,19 +101,32 @@ describe("loadConfig probe sizes", () => {
 });
 
 describe("loadConfig live-mode refinements", () => {
-  it("rejects a private key without an arbitrage address", () => {
-    expect(() => loadWith({PRIVATE_KEY: KEY})).toThrow();
+  it("accepts a private key alone, defaulting the address from constants", () => {
+    const c = loadWith({PRIVATE_KEY: KEY});
+    expect(c.arbitrageAddress).toBe(ARBITRAGE_ADDRESS);
   });
 
-  it("rejects TX_MODE=live without both key and address", () => {
+  it("rejects TX_MODE=live without a private key", () => {
     expect(() => loadWith({TX_MODE: "live"})).toThrow();
+  });
+
+  it("accepts TX_MODE=live with only a key, defaulting the address from constants", () => {
+    const c = loadWith({TX_MODE: "live", PRIVATE_KEY: KEY});
+    expect(c.txMode).toBe("live");
+    expect(c.arbitrageAddress).toBe(ARBITRAGE_ADDRESS);
+  });
+
+  it("rejects TX_MODE=live with a zero-address override", () => {
+    expect(() =>
+      loadWith({TX_MODE: "live", PRIVATE_KEY: KEY, ARBITRAGE_ADDRESS: zeroAddress}),
+    ).toThrow();
   });
 
   it("rejects a malformed private key", () => {
     expect(() => loadWith({PRIVATE_KEY: "0xnothex", ARBITRAGE_ADDRESS: ARB})).toThrow();
   });
 
-  it("accepts a valid live configuration", () => {
+  it("lets ARBITRAGE_ADDRESS override the constants default", () => {
     const c = loadWith({TX_MODE: "live", PRIVATE_KEY: KEY, ARBITRAGE_ADDRESS: ARB});
     expect(c.txMode).toBe("live");
     expect(c.privateKey).toBe(KEY);

@@ -55,20 +55,21 @@ forge script script/Deploy.s.sol:Deploy --rpc-url "$ETHEREUM_RPC_URL" \
   --private-key "$DEPLOYER_KEY" --broadcast --verify --etherscan-api-key "$ETHERSCAN_API_KEY"
 ```
 
-The deployed address, tx hash, block, and constructor args are written to
-`broadcast/Deploy.s.sol/1/run-latest.json` (this is the deployment record; `broadcast/` is
-gitignored, so keep it or note the address elsewhere). If `OWNER != deployer`, `OWNER` must send
-`acceptOwnership()` to finish the handoff.
+The deployed address, tx hash, block, and constructor args land in
+`broadcast/Deploy.s.sol/1/run-latest.json` (local only; `broadcast/` is gitignored). If
+`OWNER != deployer`, `OWNER` must send `acceptOwnership()` to finish the handoff.
 
 ## 4. Post-deploy wiring
 
-1. **Fund reserves.** Transfer VUSD directly to the deployed address. The contract custodies
+1. **Record the address.** Set `ARBITRAGE_ADDRESS` in `src/constants.ts` to the deployed address and
+   commit it. That committed constant is the default the bot reads; env only overrides it.
+2. **Fund reserves.** Transfer VUSD directly to the deployed address. The contract custodies
    reserves; there is no deposit function. With no VUSD it cannot open a position.
-2. **Gas the keeper.** Send a little ETH to the `KEEPER` EOA (it signs txs; it never holds VUSD).
-3. **Point the bot at it.** Set `ARBITRAGE_ADDRESS` (the deployed address) and `PRIVATE_KEY` (the
-   keeper key) in the bot env / Render secrets. The bot reads `ARBITRAGE_ADDRESS` from env and
-   re-derives all state from chain each tick.
-4. **Rotate the keeper if a placeholder was used.** `addKeeper(botEOA)` then
+3. **Gas the keeper.** Send a little ETH to the `KEEPER` EOA (it signs txs; it never holds VUSD).
+4. **Point the bot at it.** The address is baked into `src/constants.ts`, so the bot already knows
+   it; just set `PRIVATE_KEY` (keeper key) in the bot env / Render secrets. Set `ARBITRAGE_ADDRESS`
+   env only to override the constant (e.g. a redeploy before constants is updated).
+5. **Rotate the keeper if a placeholder was used.** `addKeeper(botEOA)` then
    `removeKeeper(placeholder)`.
 
 ## 5. Go live safely

@@ -4,10 +4,11 @@
 # broadcast on the same nonce and the two would clobber each other. numInstances is
 # pinned to 1 and must stay 1; there is no horizontal scaling of this service.
 #
-# Secrets (RPC URL, keeper key, contract address) are marked sync:false: Render
-# leaves them unset in the blueprint and you fill them in the dashboard, so no key
-# ever lands in git. Everything else mirrors .env.example defaults and is safe to
-# commit. Deploys are manual (autoDeploy:false): roll the keeper deliberately.
+# Secrets (RPC URL, keeper key) are marked sync:false: Render leaves them unset in
+# the blueprint and you fill them in the dashboard, so no key ever lands in git.
+# ARBITRAGE_ADDRESS is also sync:false but optional: it defaults from src/constants.ts
+# and you set it only to override that default. Everything else mirrors .env.example
+# defaults and is safe to commit. Deploys are manual (autoDeploy:false).
 services:
   - type: web
     name: svusd-arb-bot
@@ -28,7 +29,7 @@ services:
         sync: false
       - key: PRIVATE_KEY
         sync: false
-      - key: ARBITRAGE_ADDRESS
+      - key: ARBITRAGE_ADDRESS # optional: overrides the src/constants.ts default
         sync: false
       # ── Operational toggles: dashboard-owned (sync:false) so a deploy never
       #    reverts a hand-flip. App defaults to dry-run + unpaused when unset. ──
