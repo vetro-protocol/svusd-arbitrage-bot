@@ -1,9 +1,18 @@
-import {type Address, formatEther} from "viem";
+import {type Address, formatEther, type PublicClient, parseAbi} from "viem";
 import type {Config} from "./config.js";
+import {ETH_USD_FEED} from "./constants.js";
+import {perGasWei} from "./gas.js";
 import {quoteEntry} from "./quote.js";
 import type {EntryPlan, EntryRouter} from "./router.js";
 import type {StakingVault} from "./stakingVault.js";
 import type {Opportunity, VaultState} from "./types.js";
+
+/** Chainlink ETH/USD, 8 decimals; `updatedAt` feeds the staleness check. */
+const ETH_USD_ABI = parseAbi([
+  "function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)",
+]);
+/** Reject an ETH/USD reading older than this; well past the feed's ~1h heartbeat. */
+const ETH_USD_MAX_STALENESS_S = 3 * 3600;
 
 /** An opportunity plus the winning venue's plan, so the open job can rebuild the exact swap. */
 export interface EvaluatedOpportunity extends Opportunity {
@@ -29,14 +38,55 @@ export class Monitor {
     private config: Config,
     private router: EntryRouter,
     private vault: StakingVault,
+    private publicClient?: PublicClient,
   ) {}
 
   async readVault(): Promise<VaultState> {
     return this.vault.readState(this.config.arbitrageAddress as Address | undefined);
   }
 
-  /** Simulate one probe size. Returns null if no venue quotes it. */
-  async evaluate(vusdAmount: bigint, minProfitBps: number): Promise<EvaluatedOpportunity | null> {
+  /**
+   * Live round-trip gas cost in VUSD: `gasPrice * gasUnitsPerRoundTrip * ETH/USD` (gas is paid in
+   * ETH, profit is VUSD). Returns null when it can't be priced safely; null pauses opens while
+   * settles, which never price gas, keep running. No guessed static fallback.
+   */
+  async currentGasCostVusd(): Promise<bigint | null> {
+    if (!this.publicClient) return null;
+    try {
+      const [gasPriceWei, round] = await Promise.all([
+        perGasWei(this.publicClient),
+        this.publicClient.readContract({
+          address: ETH_USD_FEED,
+          abi: ETH_USD_ABI,
+          functionName: "latestRoundData",
+        }),
+      ]);
+      const [, ethUsd, , updatedAt] = round;
+      if (gasPriceWei <= 0n || ethUsd <= 0n) return null;
+      // Mirror the executor's broadcast cap so the two never disagree on what's actionable.
+      if (gasPriceWei > BigInt(this.config.maxGasPriceGwei) * 1_000_000_000n) return null;
+      const ageS = Math.floor(Date.now() / 1000) - Number(updatedAt);
+      if (ageS > ETH_USD_MAX_STALENESS_S) return null;
+      // gasPriceWei (1e18 ETH) * gasUnits = wei of ETH; * ethUsd (1e8) / 1e8 = VUSD base units (1e18).
+      const gasCostWei = gasPriceWei * BigInt(this.config.gasUnitsPerRoundTrip);
+      return (gasCostWei * ethUsd) / 100_000_000n;
+    } catch (e) {
+      console.warn(
+        `  gas price/ETH-USD read failed, pausing opens: ${e instanceof Error ? e.message : e}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Simulate one probe size. Returns null with no venue quote or unpriceable gas. Prices gas live
+   * unless a cost is passed (explicit null = unpriceable).
+   */
+  async evaluate(
+    vusdAmount: bigint,
+    minProfitBps: number,
+    gasCostVusd?: bigint | null,
+  ): Promise<EvaluatedOpportunity | null> {
     // Buy sVUSD on the best venue (impact included), then the VUSD requestRedeem would lock for it.
     const quote = await quoteEntry(this.router, this.vault, vusdAmount);
     if (!quote) return null;
@@ -45,8 +95,10 @@ export class Monitor {
 
     // Money math in base units so the gate is bit-exact with the contract; only prices and
     // bps (ratios, not amounts) are floats, derived for display.
+    const gasCost = gasCostVusd === undefined ? await this.currentGasCostVusd() : gasCostVusd;
+    if (gasCost === null) return null;
     const grossProfitVusd = vusdLocked - vusdAmount;
-    const netProfitVusd = grossProfitVusd - this.config.estimatedGasCostVusd;
+    const netProfitVusd = grossProfitVusd - gasCost;
     const buffer = (vusdAmount * BigInt(this.config.bufferBps)) / 10_000n;
     const netProfitAfterBufferVusd = netProfitVusd - buffer;
 
@@ -76,10 +128,12 @@ export class Monitor {
   }
 
   /** Evaluate every configured probe size against `minProfitBps`. Best (highest buffered net) first. */
-  async scan(minProfitBps: number): Promise<EvaluatedOpportunity[]> {
+  async scan(minProfitBps: number, gasCostVusd?: bigint | null): Promise<EvaluatedOpportunity[]> {
+    // Price gas once per tick; all probes share it.
+    const gasCost = gasCostVusd === undefined ? await this.currentGasCostVusd() : gasCostVusd;
     const results = await Promise.all(
       this.config.probeAmounts.map((a) =>
-        this.evaluate(a, minProfitBps).catch((e) => {
+        this.evaluate(a, minProfitBps, gasCost).catch((e) => {
           console.warn(
             `  probe ${formatEther(a)}: quote failed: ${e instanceof Error ? e.message : e}`,
           );

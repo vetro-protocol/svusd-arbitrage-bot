@@ -40,8 +40,9 @@ services:
       # ── Profit / sizing / safety knobs (mirror .env.example) ──
       - key: MIN_PROFIT_BPS
         value: "0"
-      - key: ESTIMATED_GAS_COST_VUSD
-        value: "15"
+      # Gas is priced live (gasPrice * units * ETH/USD); opens pause if it can't be read.
+      - key: GAS_UNITS_PER_ROUND_TRIP
+        value: "810000"
       - key: BUFFER_BPS
         value: "30"
       - key: MAX_GAS_PRICE_GWEI

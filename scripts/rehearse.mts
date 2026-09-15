@@ -92,7 +92,7 @@ function makeConfig(over: Partial<Config>): Config {
     maxTxSpendVusd: parseEther("1000000"),
     entrySlippageBps: 50,
     minProfitBps: 0,
-    estimatedGasCostVusd: 0n,
+    gasUnitsPerRoundTrip: 810_000,
     bufferBps: 0,
     maxGasPriceGwei: 1_000_000,
     probeAmounts: [FUND],
@@ -165,8 +165,9 @@ async function main() {
   const jobs = new Jobs(cfg, publicClient, vault, arb, executor, monitor);
 
   const minProfitBps = Number(await arb.minProfitBps());
-  const opps = await monitor.scan(minProfitBps);
-  await jobs.open(opps, minProfitBps);
+  // Force gas to 0 so any positive spread opens; this harness exercises the round trip, not gas pricing.
+  const opps = await monitor.scan(minProfitBps, 0n);
+  await jobs.open(opps, minProfitBps, 0n);
 
   const ids = await arb.openRequestIds();
   check("one position opened", ids.length === 1, `ids=[${ids.join(",")}]`);
