@@ -21,7 +21,7 @@ export function makeConfig(over: Partial<Config> = {}): Config {
     maxTxSpendVusd: 10_000n * ONE,
     entrySlippageBps: 50,
     minProfitBps: 0,
-    estimatedGasCostVusd: 15n * ONE,
+    gasUnitsPerRoundTrip: 810_000,
     bufferBps: 30,
     maxGasPriceGwei: 40,
     probeAmounts: [1_000n * ONE],

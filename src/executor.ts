@@ -1,5 +1,6 @@
 import {type Account, formatEther, formatGwei, type Hash, type PublicClient} from "viem";
 import type {Config} from "./config.js";
+import {perGasWei} from "./gas.js";
 
 /**
  * The single choke point every state-changing call passes through. In order it:
@@ -41,12 +42,9 @@ export class Executor {
     console.log(`  [exec ${label}] ${msg}`);
   }
 
-  /** Current per-gas price in gwei: EIP-1559 max fee, falling back to legacy gasPrice so the cap
-   *  never silently disengages on an RPC that omits the 1559 fee. */
+  /** Per-gas price in gwei via the shared `perGasWei`, so the cap and the monitor's gate agree. */
   private async gasPriceGwei(): Promise<number> {
-    const fees = await this.client.estimateFeesPerGas();
-    const wei = fees.maxFeePerGas ?? (await this.client.getGasPrice());
-    return Number(formatGwei(wei));
+    return Number(formatGwei(await perGasWei(this.client)));
   }
 
   async run(plan: TxPlan): Promise<ExecOutcome> {

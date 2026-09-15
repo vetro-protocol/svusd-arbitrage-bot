@@ -63,7 +63,7 @@ async function main() {
   const vault = new StakingVault(publicClient);
   const aggregators = buildAggregators(cfg);
   const router = new EntryRouter(new CurveQuoter(publicClient), aggregators, cfg.entrySlippageBps);
-  const monitor = new Monitor(cfg, router, vault);
+  const monitor = new Monitor(cfg, router, vault, publicClient);
 
   // A contract (read-only) whenever one is configured, so the bot reads the live on-chain
   // floor as the source of truth even in dry-run. Jobs need a signer on top of that.
@@ -108,7 +108,13 @@ async function main() {
       );
 
       const minProfitBps = arb ? Number(await arb.minProfitBps()) : cfg.minProfitBps;
-      const opps = await monitor.scan(minProfitBps);
+      const gasCostVusd = await monitor.currentGasCostVusd();
+      console.log(
+        gasCostVusd === null
+          ? `  gas: unpriceable this tick, opens paused (settles still run)`
+          : `  gas: ~${Number(formatEther(gasCostVusd)).toFixed(2)} VUSD/round-trip (live)`,
+      );
+      const opps = await monitor.scan(minProfitBps, gasCostVusd);
       if (!opps.length) console.log(`  no quotable opportunities this tick`);
       for (const o of opps) console.log(`  ${fmt(o)}`);
 
@@ -129,7 +135,7 @@ async function main() {
         // never skip it: contain the open here so settle always runs.
         if (state.cooldownEnabled) {
           try {
-            await jobs.open(opps, minProfitBps);
+            await jobs.open(opps, minProfitBps, gasCostVusd);
           } catch (e) {
             console.warn(`  open failed: ${e instanceof Error ? e.message : e}`);
           }

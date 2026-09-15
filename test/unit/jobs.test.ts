@@ -181,7 +181,7 @@ describe("Jobs.open", () => {
       opps: [opp()],
       fresh: opp() as EvaluatedOpportunity,
     });
-    await h.jobs.open([opp()], 30);
+    await h.jobs.open([opp()], 30, 0n);
 
     // tolerance = 10000 - 50 slippage = 9950
     expect(h.built.minShares).toBe((995n * ONE * 9950n) / 10_000n);
@@ -199,7 +199,7 @@ describe("Jobs.open", () => {
       opps: [opp({profitable: false})],
       fresh: opp() as EvaluatedOpportunity,
     });
-    await h.jobs.open([opp({profitable: false})], 30);
+    await h.jobs.open([opp({profitable: false})], 30, 0n);
     expect(h.runs).toHaveLength(0);
     expect(h.monitor.evaluate).not.toHaveBeenCalled();
   });
@@ -211,7 +211,7 @@ describe("Jobs.open", () => {
       opps: [opp()],
       fresh: opp() as EvaluatedOpportunity,
     });
-    await h.jobs.open([opp()], 30);
+    await h.jobs.open([opp()], 30, 0n);
     expect(h.runs).toHaveLength(0);
   });
 
@@ -221,7 +221,7 @@ describe("Jobs.open", () => {
       opps: [opp()],
       fresh: opp({profitable: false}) as EvaluatedOpportunity,
     });
-    await h.jobs.open([opp()], 30);
+    await h.jobs.open([opp()], 30, 0n);
     expect(h.monitor.evaluate).toHaveBeenCalledOnce();
     expect(h.runs).toHaveLength(0);
   });
@@ -232,7 +232,7 @@ describe("Jobs.open", () => {
       opps: [opp()],
       fresh: opp({vusdLocked: 1_000n * ONE}) as EvaluatedOpportunity, // locked == amount -> minProfit 0
     });
-    await h.jobs.open([opp()], 30);
+    await h.jobs.open([opp()], 30, 0n);
     expect(h.runs).toHaveLength(0);
   });
 
@@ -244,7 +244,7 @@ describe("Jobs.open", () => {
       fresh: opp() as EvaluatedOpportunity,
       config: {maxTxSpendVusd: 500n * ONE},
     });
-    await h.jobs.open([opp()], 30);
+    await h.jobs.open([opp()], 30, 0n);
     expect(h.runs).toHaveLength(0);
     expect(h.monitor.evaluate).not.toHaveBeenCalled();
   });
@@ -257,8 +257,8 @@ describe("Jobs.open", () => {
       opps: [tooBig, affordable],
       fresh: affordable as EvaluatedOpportunity,
     });
-    await h.jobs.open([tooBig, affordable], 30);
-    expect(h.monitor.evaluate).toHaveBeenCalledWith(1_000n * ONE, 30); // re-quoted the affordable one
+    await h.jobs.open([tooBig, affordable], 30, 0n);
+    expect(h.monitor.evaluate).toHaveBeenCalledWith(1_000n * ONE, 30, 0n); // re-quoted the affordable one
     expect(h.opened.vusdAmount).toBe(1_000n * ONE);
   });
 });

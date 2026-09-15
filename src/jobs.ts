@@ -24,8 +24,10 @@ export class Jobs {
     private monitor: Monitor,
   ) {}
 
-  /** Open the best profitable opportunity the contract can afford, at most one per tick. */
-  async open(opps: Opportunity[], minProfitBps: number): Promise<void> {
+  /** Open the best profitable opportunity the contract can afford, at most one per tick. `gasCostVusd`
+   *  is the tick's shared gas price; null means unpriceable, so pause opens (settle still runs). */
+  async open(opps: Opportunity[], minProfitBps: number, gasCostVusd: bigint | null): Promise<void> {
+    if (gasCostVusd === null) return;
     const reserves = await this.client.readContract({
       address: VUSD_ADDRESS,
       abi: ERC20_ABI,
@@ -39,7 +41,7 @@ export class Jobs {
 
     // Re-evaluate the chosen size on-chain right now: the tick's quote may be stale, and we must
     // not open on an edge that has since vanished. Bail unless it STILL clears the full gate.
-    const fresh = await this.monitor.evaluate(candidate.vusdAmount, minProfitBps);
+    const fresh = await this.monitor.evaluate(candidate.vusdAmount, minProfitBps, gasCostVusd);
     if (!fresh?.profitable) return;
 
     // Both floors are a tight discount of this fresh, still-profitable simulation, so a sandwich can

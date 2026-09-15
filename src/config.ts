@@ -24,8 +24,8 @@ export interface Config {
    * The bot reads the deployed `minProfitBps` live each tick, so the gate tracks the on-chain floor.
    */
   minProfitBps: number;
-  /** Off-chain gas-cost assumption for a full open+claim round trip (VUSD, base units). */
-  estimatedGasCostVusd: bigint;
+  /** Measured gas units for a full open+settle round trip; the live gas cost scales it. */
+  gasUnitsPerRoundTrip: number;
   /**
    * Prudence buffer (bps of size) held back on top of gas. The arb spread is
    * VUSD-native and fixed at open, so VUSD depeg does not erode it; this is a
@@ -110,7 +110,8 @@ const EnvSchema = z
     ),
     ARBITRAGE_ADDRESS: z.preprocess(emptyToUndefined, z.string().trim().optional()),
     MIN_PROFIT_BPS: bpsEnv(0),
-    ESTIMATED_GAS_COST_VUSD: moneyEnv("15"),
+    // Round-trip gas units (open ~650k + settle ~160k), measured on a mainnet fork.
+    GAS_UNITS_PER_ROUND_TRIP: intEnv(810_000),
     BUFFER_BPS: bpsEnv(30),
     MAX_GAS_PRICE_GWEI: intEnv(40),
     PROBE_SIZES_VUSD: z.preprocess(emptyToUndefined, z.string().optional()),
@@ -164,7 +165,7 @@ export function loadConfig(): Config {
     maxTxSpendVusd: parseEther(env.MAX_TX_SPEND_VUSD),
     entrySlippageBps: env.ENTRY_SLIPPAGE_BPS,
     minProfitBps: env.MIN_PROFIT_BPS,
-    estimatedGasCostVusd: parseEther(env.ESTIMATED_GAS_COST_VUSD),
+    gasUnitsPerRoundTrip: env.GAS_UNITS_PER_ROUND_TRIP,
     bufferBps: env.BUFFER_BPS,
     maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI,
     probeAmounts: parseProbeAmounts(env.PROBE_SIZES_VUSD),

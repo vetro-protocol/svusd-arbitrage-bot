@@ -12,7 +12,6 @@ const KNOBS = [
   "PRIVATE_KEY",
   "ARBITRAGE_ADDRESS",
   "MIN_PROFIT_BPS",
-  "ESTIMATED_GAS_COST_VUSD",
   "BUFFER_BPS",
   "MAX_GAS_PRICE_GWEI",
   "PROBE_SIZES_VUSD",
@@ -54,7 +53,7 @@ describe("loadConfig defaults", () => {
     expect(c.settleBatchCap).toBe(20);
     expect(c.port).toBe(10_000);
     expect(c.maxTxSpendVusd).toBe(parseEther("10000"));
-    expect(c.estimatedGasCostVusd).toBe(parseEther("15"));
+    expect(c.gasUnitsPerRoundTrip).toBe(810_000);
     expect(c.probeAmounts).toEqual([
       parseEther("1000"),
       parseEther("5000"),

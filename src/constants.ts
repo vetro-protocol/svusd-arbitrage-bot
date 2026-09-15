@@ -89,6 +89,10 @@ export const VUSD_DECIMALS = 18;
 /** Fixed 7-day cooldown at time of writing; the bot re-reads it live each poll. */
 export const COOLDOWN_DURATION_FALLBACK_S = 604800;
 
+// ── Gas pricing ────────────────────────────────────────────────────────────────
+/** Chainlink ETH/USD feed (8 decimals). Prices the ETH-denominated round-trip gas in VUSD (~USD). */
+export const ETH_USD_FEED: Address = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419";
+
 // ── Deployment (Ethereum mainnet) ─────────────────────────────────────────────
 /** The deployed SVusdArbitrage custody contract. Runtime `ARBITRAGE_ADDRESS` overrides it (e.g. a redeploy). */
 export const ARBITRAGE_ADDRESS: Address = "0x2B66E41fE0Be93c7f68B8fB2F2d9274f2Bc73aE6";
