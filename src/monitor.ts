@@ -3,6 +3,7 @@ import type {Config} from "./config.js";
 import {ETH_USD_FEED} from "./constants.js";
 import {perGasWei} from "./gas.js";
 import {quoteEntry} from "./quote.js";
+import {errorText} from "./redact.js";
 import type {EntryPlan, EntryRouter} from "./router.js";
 import type {StakingVault} from "./stakingVault.js";
 import type {Opportunity, VaultState} from "./types.js";
@@ -71,9 +72,7 @@ export class Monitor {
       const gasCostWei = gasPriceWei * BigInt(this.config.gasUnitsPerRoundTrip);
       return (gasCostWei * ethUsd) / 100_000_000n;
     } catch (e) {
-      console.warn(
-        `  gas price/ETH-USD read failed, pausing opens: ${e instanceof Error ? e.message : e}`,
-      );
+      console.warn(`  gas price/ETH-USD read failed, pausing opens: ${errorText(e)}`);
       return null;
     }
   }
@@ -134,9 +133,7 @@ export class Monitor {
     const results = await Promise.all(
       this.config.probeAmounts.map((a) =>
         this.evaluate(a, minProfitBps, gasCost).catch((e) => {
-          console.warn(
-            `  probe ${formatEther(a)}: quote failed: ${e instanceof Error ? e.message : e}`,
-          );
+          console.warn(`  probe ${formatEther(a)}: quote failed: ${errorText(e)}`);
           return null;
         }),
       ),

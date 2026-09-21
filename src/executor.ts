@@ -1,6 +1,7 @@
 import {type Account, formatEther, formatGwei, type Hash, type PublicClient} from "viem";
 import type {Config} from "./config.js";
 import {perGasWei} from "./gas.js";
+import {errorSummary} from "./redact.js";
 
 /**
  * The single choke point every state-changing call passes through. In order it:
@@ -70,7 +71,7 @@ export class Executor {
     try {
       await plan.simulate();
     } catch (e) {
-      const detail = e instanceof Error ? e.message.split("\n")[0] : String(e);
+      const detail = errorSummary(e);
       this.log(plan.label, `revert in simulation, not sending: ${detail}`);
       return {status: "revert", detail};
     }

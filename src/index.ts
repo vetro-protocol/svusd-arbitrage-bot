@@ -9,6 +9,7 @@ import {CurveQuoter} from "./curve.js";
 import {Executor} from "./executor.js";
 import {Jobs} from "./jobs.js";
 import {Monitor} from "./monitor.js";
+import {errorText} from "./redact.js";
 import {EntryRouter} from "./router.js";
 import {Health, startHealthServer} from "./server.js";
 import {StakingVault} from "./stakingVault.js";
@@ -137,7 +138,7 @@ async function main() {
           try {
             await jobs.open(opps, minProfitBps, gasCostVusd);
           } catch (e) {
-            console.warn(`  open failed: ${e instanceof Error ? e.message : e}`);
+            console.warn(`  open failed: ${errorText(e)}`);
           }
         } else {
           console.log(`  vault cooldown disabled; skipping opens`);
@@ -146,7 +147,7 @@ async function main() {
       }
       return null;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errorText(e);
       console.error(`[${ts()}] tick error:`, msg);
       health.recordError(msg);
       return null;
@@ -166,6 +167,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error("fatal:", e);
+  console.error("fatal:", errorText(e));
   process.exit(1);
 });
