@@ -14,16 +14,28 @@ const BUY: EntrySwap = {
   minAmountOut: 1n,
 };
 
-function arbWith(opts: {readValue?: unknown; simulateReturn?: unknown; hasWallet?: boolean} = {}) {
+function arbWith(
+  opts: {
+    readValue?: unknown;
+    simulateReturn?: unknown;
+    hasWallet?: boolean;
+    gasEstimate?: bigint;
+  } = {},
+) {
   const readContract = vi.fn().mockResolvedValue(opts.readValue);
   const simulateContract = vi
     .fn()
     .mockResolvedValue(opts.simulateReturn ?? {request: {tag: "req"}});
   const writeContract = vi.fn().mockResolvedValue("0xhash");
-  const publicClient = {readContract, simulateContract} as unknown as PublicClient;
+  const estimateContractGas = vi.fn().mockResolvedValue(opts.gasEstimate ?? 100_000n);
+  const publicClient = {
+    readContract,
+    simulateContract,
+    estimateContractGas,
+  } as unknown as PublicClient;
   const walletClient = opts.hasWallet ? ({writeContract} as unknown as WalletClient) : undefined;
   const arb = new Arbitrage(ARB, publicClient, walletClient, {address: KEEPER} as Account);
-  return {arb, readContract, simulateContract, writeContract};
+  return {arb, readContract, simulateContract, writeContract, estimateContractGas};
 }
 
 describe("Arbitrage reads", () => {
@@ -83,5 +95,31 @@ describe("Arbitrage writes", () => {
   it("send refuses without a wallet client (read-only mode)", async () => {
     const {arb} = arbWith({hasWallet: false});
     await expect(arb.settleClaimablePositions(20n).send()).rejects.toThrow("no wallet client");
+  });
+
+  it("simulates and sends at one shared gas limit, estimate plus margin", async () => {
+    const {arb, simulateContract, writeContract, estimateContractGas} = arbWith({
+      hasWallet: true,
+      gasEstimate: 100_000n,
+      simulateReturn: {request: {tag: "built"}},
+    });
+    const plan = arb.openPosition(1_000n, BUY, 5n);
+    await plan.simulate();
+    await plan.send();
+
+    // A simulation that does not carry the broadcast's limit cannot rule out an out-of-gas.
+    const limit = 125_000n; // 100k estimate + 25% margin
+    for (const call of simulateContract.mock.calls)
+      expect(call[0]).toEqual(expect.objectContaining({gas: limit}));
+    expect(writeContract).toHaveBeenCalledWith({tag: "built"});
+    // Estimated once for the pair, not once per leg.
+    expect(estimateContractGas).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the gas limit in read-only mode rather than estimating", async () => {
+    const {arb, simulateContract, estimateContractGas} = arbWith({hasWallet: false});
+    await arb.openPosition(1_000n, BUY, 5n).simulate();
+    expect(estimateContractGas).not.toHaveBeenCalled();
+    expect(simulateContract).toHaveBeenCalledWith(expect.objectContaining({gas: undefined}));
   });
 });
