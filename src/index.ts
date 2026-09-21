@@ -17,11 +17,11 @@ import type {Opportunity} from "./types.js";
 
 const ts = () => new Date().toISOString().slice(11, 19);
 
-function banner(mode: string, cfg: ReturnType<typeof loadConfig>) {
+function banner(mode: string, cfg: ReturnType<typeof loadConfig>, floor: string) {
   console.log("──────────────────────────────────────────────────────────────");
   console.log("  sVUSD Arbitrage Bot (VUSD-native)");
   console.log(`  Mode:        ${mode}`);
-  console.log(`  Floor:       ${cfg.minProfitBps} bps`);
+  console.log(`  Floor:       ${floor}`);
   console.log(`  Buffer:      ${cfg.bufferBps} bps | slippage ${cfg.entrySlippageBps} bps`);
   const venues = ["curve", ...buildAggregators(cfg).map((a) => a.name)];
   console.log(`  Venues:      ${venues.join(", ")}`);
@@ -91,7 +91,17 @@ async function main() {
   const mode = jobs
     ? `${cfg.txMode.toUpperCase()}${cfg.paused ? " (PAUSED)" : ""}`
     : "DRY-RUN (monitor-only)";
-  banner(mode, cfg);
+  // The gate reads the live on-chain floor each tick, so show that rather than the env
+  // fallback it ignores whenever a contract is wired.
+  let floor = `${cfg.minProfitBps} bps (env fallback)`;
+  if (arb) {
+    try {
+      floor = `${Number(await arb.minProfitBps())} bps (on-chain)`;
+    } catch {
+      floor = `${cfg.minProfitBps} bps (env fallback; on-chain read failed)`;
+    }
+  }
+  banner(mode, cfg, floor);
 
   const health = new Health(mode, cfg.txMode, cfg.paused, cfg.healthStaleMs);
   startHealthServer(health, cfg.port);
