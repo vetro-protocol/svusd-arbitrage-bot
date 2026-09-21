@@ -9,7 +9,7 @@ import {CurveQuoter} from "./curve.js";
 import {Executor} from "./executor.js";
 import {Jobs} from "./jobs.js";
 import {Monitor} from "./monitor.js";
-import {errorText} from "./redact.js";
+import {errorText, registerSecrets} from "./redact.js";
 import {EntryRouter} from "./router.js";
 import {Health, startHealthServer} from "./server.js";
 import {StakingVault} from "./stakingVault.js";
@@ -56,6 +56,8 @@ function buildAggregators(cfg: ReturnType<typeof loadConfig>): AggregatorAdapter
 
 async function main() {
   const cfg = loadConfig();
+  // Before any client exists: transport errors quote the endpoint, credential and all.
+  registerSecrets(cfg.rpcUrl);
   const publicClient = createPublicClient({
     chain: mainnet,
     transport: http(cfg.rpcUrl),

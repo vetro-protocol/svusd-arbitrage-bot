@@ -15,16 +15,35 @@ const MAX_LENGTH = 1_200;
 /** A line past this is a payload dump (raw calldata, a signed tx), never useful in a log. */
 const MAX_LINE_LENGTH = 200;
 /**
- * A bare hex run of credential length, not part of an 0x-prefixed value. 32 is a hosted-RPC
- * project id, 64 a private key; addresses and tx hashes keep their 0x and are left readable.
+ * A bare 32-hex run, not part of an 0x-prefixed value: the shape of a hosted-RPC project id
+ * quoted in a request body or header. Addresses and tx hashes keep their 0x and stay readable.
  */
-const BARE_HEX_SECRET = /(?<![0-9a-zA-Z_])(?:[0-9a-f]{32}|[0-9a-f]{64})(?![0-9a-zA-Z_])/gi;
+const BARE_HEX_SECRET = /(?<![0-9a-zA-Z_])[0-9a-f]{32}(?![0-9a-zA-Z_])/gi;
+/** Too short to register: scrubbing a common substring would mangle every line it appears in. */
+const MIN_SECRET_LENGTH = 8;
+
+/** Exact values that must never be logged, scrubbed before the shape-based pass. */
+const knownSecrets = new Set<string>();
+
+/**
+ * Register a secret by value. Exact scrubbing succeeds where shape matching cannot: a hosted
+ * RPC endpoint can carry its credential in the path (Infura, Alchemy) or in the subdomain
+ * (QuickNode), and only the configured value itself says which. Values shorter than
+ * MIN_SECRET_LENGTH are ignored.
+ */
+export function registerSecrets(...values: (string | undefined)[]): void {
+  for (const value of values) {
+    if (value && value.length >= MIN_SECRET_LENGTH) knownSecrets.add(value);
+  }
+}
 /** Scheme plus everything up to the next whitespace; the authority is split out below. */
 const URL_PATTERN = /\bhttps?:\/\/\S+/gi;
 
 /** Strip the credential-bearing parts of any URL, keeping the host so the failure stays diagnosable. */
 export function redactSecrets(text: string): string {
-  return text
+  let out = text;
+  for (const secret of knownSecrets) out = out.split(secret).join("<redacted>");
+  return out
     .replace(URL_PATTERN, (url) => {
       const scheme = url.slice(0, url.indexOf("//") + 2);
       const rest = url.slice(scheme.length);
